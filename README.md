@@ -1,43 +1,57 @@
-# claude-dev-setup
+# Claude Dev Setup
 
-One command sets up a complete Claude Code development environment on Windows, macOS, and Linux.
+**Everything you need to start building with Claude, installed by one command.**
+
+It sets up Git, Node.js, the Antigravity editor, the Claude extensions, and the `claude` command line tool, on Windows, macOS, and Linux. Re-running is always safe.
+
+[![CI](https://github.com/AdirYad/claude-dev-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/AdirYad/claude-dev-setup/actions/workflows/ci.yml)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-blue)](#install)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+---
 
 ## Install
 
-### Windows (PowerShell)
+**Windows** (open PowerShell and paste):
 
 ```powershell
 irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1 | iex
 ```
 
-### macOS / Linux (Terminal)
+**macOS / Linux** (open Terminal and paste):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.sh | bash
 ```
 
-You can run the command again any time. Anything already installed is upgraded in place when an upgrade is available, otherwise it is left untouched, so re-running is always safe.
+That is the whole thing. You will see a checklist of green checks when it is done.
+
+---
 
 ## What it installs
 
-| Software | What it is |
-|----------|------------|
-| **git** | Version control. Tracks changes in your projects and is required by most modern dev tooling. |
-| **Node.js (LTS)** | JavaScript runtime plus `npm`. Powers most web tooling and many command line tools. |
-| **Antigravity IDE** | Google's agentic code editor (a VS Code based IDE). This is where you write code. |
-| **Claude Code extension** | Brings Claude Code straight into Antigravity, so you can chat with Claude and let it edit your project from inside the editor. |
-| **Claude RTL Code extension** | Adds proper right to left support to the editor, so Hebrew and Arabic text renders and edits correctly. |
-| **Claude Code CLI** | The `claude` command in your terminal. Run Claude Code from any project folder, no editor needed. |
+| | Software | What it is |
+|---|----------|------------|
+| 📦 | **Git** | Keeps track of your code. Required by most modern dev tools. |
+| ⚙️ | **Node.js (LTS)** | The engine that runs a huge amount of dev tooling, plus `npm`. |
+| ✨ | **Antigravity** | Google's AI code editor (built on VS Code). This is where you write code. |
+| 💬 | **Claude Code extension** | Chat with Claude and let it edit your project from inside the editor. |
+| 🔤 | **Claude RTL Code extension** | Right to left support, so Hebrew and Arabic render and edit correctly. |
+| ⌨️ | **Claude Code CLI** | The `claude` command for your terminal. Run Claude from any project folder. |
+
+---
 
 ## Good to know
 
-* **Safe to re-run.** Every component is checked first. Missing ones are installed, already installed ones are upgraded when there is an easy upgrade, otherwise they are skipped.
-* **Your terminal just works.** Each tool's folder is added to your PATH (permanently and for the current session), so `claude`, `node`, and `git` work in a fresh terminal. On Windows the PowerShell execution policy is set to `RemoteSigned` for your user only if it was blocking scripts, so the `claude` command can run.
-* **Antigravity sign in.** Antigravity needs a Google account. You sign in once the first time you open it. If the editor has never been opened, its command line tool may not exist yet, so the two extensions are skipped. Open Antigravity once, then run the install command again.
-* **Homebrew is never installed for you.** On macOS, Homebrew is used only if you already have it. Otherwise the official downloads from nodejs.org and Google are used.
-* **Linux and Antigravity.** The Antigravity editor is not installed automatically on Linux. Grab it from [antigravity.google/download/linux](https://antigravity.google/download/linux). Everything else installs normally.
-* **Claude Code account.** Claude Code needs a Pro, Max, Team, Enterprise, or Console account. You log in the first time you run `claude`.
+- **Safe to re-run.** Each component is checked first. Missing ones are installed, ones that have an easy upgrade are upgraded, the rest are left alone.
+- **Your terminal just works.** Every tool is added to your PATH (permanently and for the current session), so `claude`, `node`, and `git` work in a fresh terminal. On Windows the PowerShell execution policy is relaxed for your user only if it was blocking scripts.
+- **Antigravity sign in.** Antigravity needs a Google account. You sign in once the first time you open it. If you have never opened it, the two extensions are skipped, so open it once and run the command again.
+- **No Homebrew is installed for you.** On macOS, Homebrew is used only if you already have it. Otherwise the official downloads from nodejs.org and Google are used.
+- **Linux and Antigravity.** The editor is not installed automatically on Linux. Get it from [antigravity.google/download/linux](https://antigravity.google/download/linux). Everything else installs normally.
+- **Claude account.** Claude Code needs a Pro, Max, Team, Enterprise, or Console account. You log in the first time you run `claude`.
+
+---
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Adir Yadaev

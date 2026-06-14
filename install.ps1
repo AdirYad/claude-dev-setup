@@ -44,7 +44,6 @@ $script:WingetExe      = $null
 
 $script:Check = [char]0x2713   # check mark
 $script:Cross = [char]0x2717   # ballot x
-$script:Dot   = [char]0x2022   # bullet
 
 # ----------------------------------------------------------------------------
 # Pretty output
@@ -77,8 +76,11 @@ function Write-Check {
 function Write-Note { param([string] $Message) Write-Host "  $Message" -ForegroundColor Yellow }
 
 # ----------------------------------------------------------------------------
-# Run an external program behind a clean inline spinner, capturing its output to
-# files so it can neither spam the console nor turn its stderr into a crash.
+# Run an external program, capturing its output to files so it can neither spam
+# the console nor turn its stderr into a crash. Shows a growing-dots progress
+# line ("Checking Git....") so there is always visible activity - this works
+# even under `irm | iex`, where the console reports as redirected and an
+# in-place spinner would be invisible.
 # ----------------------------------------------------------------------------
 function Invoke-Capture {
     param(
@@ -92,18 +94,13 @@ function Invoke-Capture {
     try {
         $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-        $animate = (-not $Quiet) -and (-not [Console]::IsOutputRedirected)
-        $frames = '|', '/', '-', '\'
-        $i = 0
+        if (-not $Quiet) { Write-Host ("  {0}" -f $Label) -NoNewline -ForegroundColor Cyan }
         while (-not $p.HasExited) {
-            if ($animate) {
-                Write-Host ("`r  {0}  {1}...   " -f $frames[$i % 4], $Label) -NoNewline -ForegroundColor Cyan
-                $i++
-            }
-            Start-Sleep -Milliseconds 120
+            if (-not $Quiet) { Write-Host '.' -NoNewline -ForegroundColor Cyan }
+            Start-Sleep -Milliseconds 500
         }
         $p.WaitForExit()
-        if ($animate) { Write-Host ("`r" + (' ' * 72) + "`r") -NoNewline }
+        if (-not $Quiet) { Write-Host '' }
         $so = if (Test-Path $outFile) { [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         $se = if (Test-Path $errFile) { [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         return [pscustomobject]@{ StdOut = $so; StdErr = $se }
@@ -246,10 +243,9 @@ function Install-ClaudeCli {
         return
     }
     if ($DryRun) { return }
-    if (-not [Console]::IsOutputRedirected) { Write-Host ("`r  {0}  Installing Claude...   " -f $script:Dot) -NoNewline -ForegroundColor Cyan }
-    $installer = Invoke-RestMethod -Uri 'https://claude.ai/install.ps1'
-    & ([scriptblock]::Create($installer)) *>$null
-    if (-not [Console]::IsOutputRedirected) { Write-Host ("`r" + (' ' * 40) + "`r") -NoNewline }
+    $installerPath = Join-Path $env:TEMP 'claude-install.ps1'
+    Invoke-WebRequest -Uri 'https://claude.ai/install.ps1' -OutFile $installerPath -UseBasicParsing
+    [void](Invoke-Capture -Label 'Installing Claude' -FilePath 'powershell' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installerPath))
     Add-ToUserPath $script:ClaudeBinDir
 }
 
@@ -266,9 +262,10 @@ function Test-FreshCommand {
 }
 
 function Show-Results {
-    $okGit    = Test-FreshCommand 'git'
-    $okNode   = Test-FreshCommand 'node'
-    $okClaude = Test-FreshCommand 'claude'
+    Write-Host '  Checking everything is in place' -NoNewline -ForegroundColor Cyan
+    $okGit    = Test-FreshCommand 'git';    Write-Host '.' -NoNewline -ForegroundColor Cyan
+    $okNode   = Test-FreshCommand 'node';   Write-Host '.' -NoNewline -ForegroundColor Cyan
+    $okClaude = Test-FreshCommand 'claude'; Write-Host '.' -NoNewline -ForegroundColor Cyan
 
     $cli = Find-AntigravityCli
     $okAg = [bool]$cli
@@ -279,6 +276,7 @@ function Show-Results {
         $okExtCode = $exts -contains $script:ExtClaudeCode.ToLower()
         $okExtRtl  = $exts -contains $script:ExtClaudeRtl.ToLower()
     }
+    Write-Host '.' -ForegroundColor Cyan
 
     Write-Host ''
     Write-Check 'Git'                'keeps track of your code'          $okGit
