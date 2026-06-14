@@ -1,8 +1,20 @@
 # claude-dev-setup
 
-One command sets up a complete Claude Code development environment on Windows, macOS, and Linux.
+One click sets up a complete Claude Code development environment on Windows, macOS, and Linux.
 
-## Install
+## Easiest way (no terminal)
+
+Just download one file and double-click it. It opens a window and installs everything for you.
+
+- **Windows:** download **[install.bat](https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.bat)**, then double-click it.
+  The first time, Windows may say "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **macOS:** download **[install.command](https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.command)**, then **right-click it and choose Open** (the first time only).
+
+That is it. A window opens, everything installs, and you see a checklist of green checks when it is done.
+
+## For the terminal (alternative)
+
+If you prefer the terminal, paste one line:
 
 ### Windows (PowerShell)
 
@@ -10,16 +22,10 @@ One command sets up a complete Claude Code development environment on Windows, m
 irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1 | iex
 ```
 
-### macOS / Linux (Terminal)
+### macOS / Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.sh | bash
-```
-
-That is the whole thing. When it finishes, open a **new** terminal and run:
-
-```bash
-claude
 ```
 
 You can run the command again any time. Anything already installed is upgraded in place when an upgrade is available, otherwise it is left untouched, so re-running is always safe.
