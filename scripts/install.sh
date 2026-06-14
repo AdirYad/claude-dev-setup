@@ -392,8 +392,8 @@ show_results() {
     node_v="$(sed -n 's/^NODE=//p' "$vfile")"
     claude_v="$(sed -n 's/^CLAUDE=//p' "$vfile" | awk '{print $1}')"
     ag_v="$(sed -n 's/^AG=//p' "$vfile" | awk '{print $1}')"
-    code_v="$(grep -iE 'anthropic\.claude-code@' "$vfile" | head -1 | sed 's/.*@//')"
-    rtl_v="$(grep -iE 'adiryad\.claude-rtl-code@' "$vfile" | head -1 | sed 's/.*@//')"
+    code_v="$(grep -iE 'anthropic\.claude-code@' "$vfile" | head -1 | sed 's/.*@//')" || true
+    rtl_v="$(grep -iE 'adiryad\.claude-rtl-code@' "$vfile" | head -1 | sed 's/.*@//')" || true
     rm -f "$vfile"
 
     local ok_git=0 ok_node=0 ok_claude=0 ok_ag=0 ok_code=0 ok_rtl=0
