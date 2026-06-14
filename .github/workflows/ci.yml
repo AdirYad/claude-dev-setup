@@ -6,44 +6,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  posix:
-    name: posix (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install shellcheck
+      - name: shellcheck + bash -n
         run: |
-          if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck --version
-          elif command -v brew >/dev/null 2>&1; then
-            brew install shellcheck
-          else
-            sudo apt-get update && sudo apt-get install -y shellcheck
-          fi
+          shellcheck -S style install.sh tests/smoke.sh
+          bash -n install.sh
 
-      - name: shellcheck
-        run: shellcheck -S style install.sh tests/smoke.sh
-
-      - name: Syntax + dry-run smoke test
+  macos-dryrun:
+    name: macos (dry-run)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh dry-run smoke test
         run: bash tests/smoke.sh
 
   windows:
-    name: windows
+    name: windows (lint + dry-run)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
@@ -52,7 +42,43 @@ jobs:
           if ($results | Where-Object Severity -in 'Error','Warning') {
             throw "PSScriptAnalyzer reported errors/warnings"
           }
-
-      - name: Parse + dry-run smoke test
+      - name: install.ps1 dry-run smoke test
         shell: pwsh
         run: .\tests\smoke.ps1
+
+  # Real, end-to-end install in a clean container (no dry-run). Proves the
+  # script actually installs git, Node.js, and the Claude Code CLI from scratch.
+  # Antigravity and its extensions are a GUI app that needs a display and a
+  # Google sign-in, so they cannot be installed in headless CI and are not
+  # exercised here.
+  real-install-linux:
+    name: real install (ubuntu container)
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Prerequisites (curl, ca-certificates, git)
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            curl ca-certificates git >/dev/null
+      - name: Fetch this commit
+        run: |
+          git init -q /src
+          cd /src
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}"
+          git -c protocol.version=2 fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+      - name: Run install.sh for real
+        run: bash /src/install.sh
+      - name: Assert tools are installed and on PATH
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          fail=0
+          for t in git node npm claude; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "OK   $t -> $("$t" --version 2>/dev/null | head -1)"
+            else
+              echo "FAIL missing: $t"; fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "REAL INSTALL OK" || exit 1

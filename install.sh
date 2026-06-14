@@ -327,24 +327,33 @@ install_antigravity() {
 # Extensions
 # --------------------------------------------------------------------------
 # Antigravity's CLI prints a harmless "antigravityAnalytics ... NOT registered"
-# warning and may exit non-zero even when the extension installs fine, so judge
-# success by the output text, not the exit code. --install-extension is itself
-# idempotent (installs or upgrades to latest); its --list-extensions is
-# unreliable, so there is no separate "already installed" pre-check.
+# warning to stderr; its real output goes to stdout. Drop stderr to read the
+# clean list of installed extension ids, lower-cased for comparison.
+antigravity_extensions() {
+    local cli="$1"
+    [ -z "$cli" ] && return 0
+    "$cli" --list-extensions 2>/dev/null | tr '[:upper:]' '[:lower:]'
+}
+
+# Install an extension and judge success by the output text (the CLI may exit
+# non-zero on the harmless warning) or by a re-listing afterwards.
 ext_via_cli() {
-    local cli="$1" target="$2" out
+    local cli="$1" target="$2" id_lc="$3" out
     out="$("$cli" --install-extension "$target" --force 2>&1 || true)"
     [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/   /'
-    printf '%s' "$out" | grep -qiE 'successfully installed|already installed'
+    printf '%s' "$out" | grep -qiE 'successfully installed|already installed' && return 0
+    antigravity_extensions "$cli" | grep -qx "$id_lc"
 }
 
 install_extension() {
-    local ext_id="$1" cli="$2" vsix_url="$3"
+    local ext_id="$1" cli="$2" vsix_url="$3" existing="$4" id_lc
+    id_lc="$(printf '%s' "$ext_id" | tr '[:upper:]' '[:lower:]')"
 
     if [ -z "$cli" ]; then dry "install extension $ext_id via Antigravity CLI"; return 0; fi
+    if printf '%s\n' "$existing" | grep -qx "$id_lc"; then skip "$ext_id already installed"; return 0; fi
     if $DRY_RUN; then dry "install extension $ext_id (open-vsx, VSIX fallback)"; return 0; fi
 
-    if ext_via_cli "$cli" "$ext_id"; then
+    if ext_via_cli "$cli" "$ext_id" "$id_lc"; then
         ok "$ext_id installed"; return 0
     fi
     warn "registry install unconfirmed for $ext_id"
@@ -352,7 +361,7 @@ install_extension() {
     if [ -n "$vsix_url" ]; then
         local vsix
         vsix="$(mktemp -d)/ext.vsix"
-        if curl -fsSL "$vsix_url" -o "$vsix" && ext_via_cli "$cli" "$vsix"; then
+        if curl -fsSL "$vsix_url" -o "$vsix" && ext_via_cli "$cli" "$vsix" "$id_lc"; then
             ok "$ext_id installed from VSIX"
         else
             err "failed to install $ext_id"
@@ -364,14 +373,16 @@ install_extension() {
 
 install_extensions() {
     step "Antigravity extensions"
-    local cli=""
+    if $DRY_RUN; then dry "install Claude Code + Claude RTL extensions"; return 0; fi
+    local cli existing
     cli="$(find_antigravity_cli 2>/dev/null || true)"
-    if [ -z "$cli" ] && ! $DRY_RUN; then
+    if [ -z "$cli" ]; then
         warn "Antigravity CLI not found; open Antigravity once, then re-run."
         return 0
     fi
-    install_extension "$EXT_CLAUDE_CODE" "$cli" ""
-    install_extension "$EXT_CLAUDE_RTL" "$cli" "$RTL_VSIX_URL"
+    existing="$(antigravity_extensions "$cli")"
+    install_extension "$EXT_CLAUDE_CODE" "$cli" "" "$existing"
+    install_extension "$EXT_CLAUDE_RTL" "$cli" "$RTL_VSIX_URL" "$existing"
 }
 
 # --------------------------------------------------------------------------
@@ -414,9 +425,11 @@ verify() {
     cli="$(find_antigravity_cli 2>/dev/null || true)"
     if [ -n "$cli" ]; then
         report_row "antigravity" "OK" "$cli"
-        # Antigravity's --list-extensions is unreliable (analytics dependency
-        # error), so extensions cannot be confirmed from the CLI.
-        report_row "extensions" "INFO" "installed via CLI; confirm in Antigravity Extensions panel"
+        local exts hc=no hr=no
+        exts="$(antigravity_extensions "$cli")"
+        if printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_CODE" | tr '[:upper:]' '[:lower:]')"; then hc=yes; fi
+        if printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_RTL" | tr '[:upper:]' '[:lower:]')"; then hr=yes; fi
+        report_row "extensions" "INFO" "claude-code=$hc rtl=$hr"
     else
         report_row "antigravity" "MISSING" ""
         if [ "$OS" = mac ]; then missing=$((missing + 1)); fi

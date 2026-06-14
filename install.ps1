@@ -8,12 +8,12 @@
 
     Re-running is safe: anything already installed is upgraded in place when an
     immediate upgrade is available (winget upgrade / claude update), otherwise
-    it is left alone. PATH and the PowerShell ExecutionPolicy are always fixed
-    so the tools work in a fresh terminal.
+    it is left alone. Extensions already present are skipped. PATH and the
+    PowerShell ExecutionPolicy are always fixed so the tools work in a fresh
+    terminal.
 
 .PARAMETER DryRun
     Internal/testing only: print every action without changing the system.
-    Used by CI; users never need it.
 
 .EXAMPLE
     irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1 | iex
@@ -24,11 +24,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # no Invoke-WebRequest progress bars
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { Write-Verbose 'console encoding unchanged' }
 
-# Native tools (winget, antigravity) sometimes return a non-zero exit code even
-# on success (e.g. Antigravity prints a harmless analytics warning). Stop PS7
-# from turning those exit codes into terminating errors; we check results
-# explicitly instead.
+# PS7-only: stop non-zero native exit codes becoming terminating errors.
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
@@ -36,11 +35,12 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -Er
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
-$script:ExtClaudeCode = 'Anthropic.claude-code'
-$script:ExtClaudeRtl  = 'AdirYad.claude-rtl-code'
+$script:ExtClaudeCode  = 'Anthropic.claude-code'
+$script:ExtClaudeRtl   = 'AdirYad.claude-rtl-code'
 $script:RtlVsixVersion = '1.0.9'
-$script:RtlVsixUrl = "https://open-vsx.org/api/AdirYad/claude-rtl-code/$($script:RtlVsixVersion)/file/AdirYad.claude-rtl-code-$($script:RtlVsixVersion).vsix"
-$script:ClaudeBinDir = Join-Path $env:USERPROFILE '.local\bin'
+$script:RtlVsixUrl     = "https://open-vsx.org/api/AdirYad/claude-rtl-code/$($script:RtlVsixVersion)/file/AdirYad.claude-rtl-code-$($script:RtlVsixVersion).vsix"
+$script:ClaudeBinDir   = Join-Path $env:USERPROFILE '.local\bin'
+$script:WingetExe      = $null
 
 # ----------------------------------------------------------------------------
 # Logging
@@ -53,6 +53,44 @@ function Write-Err  { param([string] $Message) Write-Host "   [err]  $Message" -
 function Write-Dry  { param([string] $Message) Write-Host "   [dry]  would $Message" -ForegroundColor Magenta }
 
 # ----------------------------------------------------------------------------
+# Run an external program with a clean inline spinner, capturing its output to
+# files so it can neither spam the console nor turn its stderr into a crash.
+# ----------------------------------------------------------------------------
+function Invoke-Capture {
+    param(
+        [string]   $Label,
+        [string]   $FilePath,
+        [string[]] $Arguments = @(),
+        [switch]   $Quiet
+    )
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $animate = (-not $Quiet) -and (-not [Console]::IsOutputRedirected)
+        $frames = '|', '/', '-', '\'
+        $i = 0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $p.HasExited) {
+            if ($animate) {
+                Write-Host ("`r   [{0}] {1} ({2}s)   " -f $frames[$i % 4], $Label, [int]$sw.Elapsed.TotalSeconds) -NoNewline -ForegroundColor Cyan
+                $i++
+            }
+            Start-Sleep -Milliseconds 120
+        }
+        $p.WaitForExit()
+        if ($animate) { Write-Host ("`r" + (' ' * 72) + "`r") -NoNewline }
+        $so = if (Test-Path $outFile) { [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } else { '' }
+        $se = if (Test-Path $errFile) { [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue) } else { '' }
+        return [pscustomobject]@{ StdOut = $so; StdErr = $se }
+    }
+    finally {
+        Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
+    }
+}
+
+# ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
 function Test-CommandExists {
@@ -60,22 +98,18 @@ function Test-CommandExists {
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-# Re-read PATH from machine + user scope into the current session.
 function Update-SessionPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user    = [Environment]::GetEnvironmentVariable('Path', 'User')
     $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
 }
 
-# Add a directory to the persistent User PATH (and the session) if missing.
 function Add-ToUserPath {
     param([string] $Directory)
     if (-not $Directory) { return }
-
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $parts = @()
     if ($userPath) { $parts = $userPath -split ';' | Where-Object { $_ } }
-
     $already = $parts | Where-Object { $_.TrimEnd('\') -ieq $Directory.TrimEnd('\') }
     if ($already) {
         Write-Skip "PATH already contains $Directory"
@@ -88,29 +122,26 @@ function Add-ToUserPath {
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
         Write-Ok "added $Directory to User PATH"
     }
+    if (($env:Path -split ';') -notcontains $Directory) { $env:Path = "$($env:Path);$Directory" }
+}
 
-    # Make it usable immediately in this session too.
-    if (($env:Path -split ';') -notcontains $Directory) {
-        $env:Path = "$($env:Path);$Directory"
+function Get-WingetExe {
+    if (-not $script:WingetExe) {
+        $script:WingetExe = (Get-Command winget -ErrorAction SilentlyContinue).Source
     }
+    return $script:WingetExe
 }
 
-function Test-Winget {
-    if (Test-CommandExists 'winget') { return $true }
-    Write-Err 'winget not found. Install "App Installer" from the Microsoft Store, then re-run.'
-    return $false
-}
-
-# winget install/upgrade with non-interactive flags. Returns $true.
+# winget install/upgrade. Output is captured (no console spam); success is
+# confirmed by the verification step at the end, not the exit code.
 function Invoke-Winget {
-    param(
-        [string] $Id,
-        [switch] $DoUpgrade
-    )
-    $verb = if ($DoUpgrade) { 'upgrade' } else { 'install' }
-    if ($DryRun) { Write-Dry "winget $verb --id $Id"; return $true }
-    winget $verb --id $Id --exact --silent `
-        --accept-package-agreements --accept-source-agreements --disable-interactivity | Out-Host
+    param([string] $Label, [string] $Verb, [string] $Id)
+    $exe = Get-WingetExe
+    if (-not $exe) { Write-Err 'winget not found. Install "App Installer" from the Microsoft Store, then re-run.'; return $false }
+    if ($DryRun) { Write-Dry "$Label (winget $Verb $Id)"; return $true }
+    [void](Invoke-Capture -Label $Label -FilePath $exe -Arguments @(
+            $Verb, '--id', $Id, '--exact', '--silent',
+            '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity'))
     return $true
 }
 
@@ -120,33 +151,24 @@ function Invoke-Winget {
 function Set-ExecutionPolicyIfRestricted {
     Write-Step 'PowerShell ExecutionPolicy'
     $current = Get-ExecutionPolicy -Scope CurrentUser
-    $restrictive = @('Restricted', 'AllSigned', 'Undefined')
-    if ($restrictive -contains [string]$current) {
-        if ($DryRun) {
-            Write-Dry "set CurrentUser ExecutionPolicy to RemoteSigned (was $current)"
-        }
-        else {
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-            Write-Ok 'ExecutionPolicy = RemoteSigned (CurrentUser)'
-        }
+    if (@('Restricted', 'AllSigned', 'Undefined') -contains [string]$current) {
+        if ($DryRun) { Write-Dry "set CurrentUser ExecutionPolicy to RemoteSigned (was $current)" }
+        else { Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; Write-Ok 'ExecutionPolicy = RemoteSigned (CurrentUser)' }
     }
-    else {
-        Write-Skip "ExecutionPolicy already permissive ($current)"
-    }
+    else { Write-Skip "ExecutionPolicy already permissive ($current)" }
 }
 
 # ----------------------------------------------------------------------------
-# Components (install when missing; upgrade in place when already present)
+# Components
 # ----------------------------------------------------------------------------
 function Install-Git {
     Write-Step 'git'
     if (Test-CommandExists 'git') {
-        Invoke-Winget -Id 'Git.Git' -DoUpgrade | Out-Null
+        [void](Invoke-Winget -Label 'Upgrading git' -Verb 'upgrade' -Id 'Git.Git')
         if (-not $DryRun) { Write-Ok "git up to date ($(git --version))" }
         return
     }
-    if (-not (Test-Winget)) { return }
-    Invoke-Winget -Id 'Git.Git' | Out-Null
+    if (-not (Invoke-Winget -Label 'Installing git' -Verb 'install' -Id 'Git.Git')) { return }
     Update-SessionPath
     if (-not $DryRun) { Write-Ok 'git installed' }
 }
@@ -154,93 +176,69 @@ function Install-Git {
 function Install-Node {
     Write-Step 'Node.js LTS'
     if (Test-CommandExists 'node') {
-        Invoke-Winget -Id 'OpenJS.NodeJS.LTS' -DoUpgrade | Out-Null
+        [void](Invoke-Winget -Label 'Upgrading Node.js' -Verb 'upgrade' -Id 'OpenJS.NodeJS.LTS')
         if (-not $DryRun) { Write-Ok "Node up to date ($(node --version))" }
         return
     }
-    if (-not (Test-Winget)) { return }
-    Invoke-Winget -Id 'OpenJS.NodeJS.LTS' | Out-Null
+    if (-not (Invoke-Winget -Label 'Installing Node.js' -Verb 'install' -Id 'OpenJS.NodeJS.LTS')) { return }
     Update-SessionPath
     if (-not $DryRun) { Write-Ok 'Node installed' }
 }
 
 function Find-AntigravityCli {
-    if (Test-CommandExists 'antigravity') {
-        return (Get-Command 'antigravity' -ErrorAction SilentlyContinue).Source
-    }
+    if (Test-CommandExists 'antigravity') { return (Get-Command 'antigravity' -ErrorAction SilentlyContinue).Source }
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\bin\antigravity.cmd'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\bin\antigravity'),
         (Join-Path ${env:ProgramFiles} 'Antigravity\bin\antigravity.cmd')
     )
-    foreach ($c in $candidates) {
-        if ($c -and (Test-Path $c)) { return $c }
-    }
+    foreach ($c in $candidates) { if ($c -and (Test-Path $c)) { return $c } }
     return $null
 }
 
-function Install-Antigravity {
-    Write-Step 'Antigravity IDE'
-    if (Find-AntigravityCli) {
-        Invoke-Winget -Id 'Google.Antigravity' -DoUpgrade | Out-Null
-        if (-not $DryRun) { Write-Ok 'Antigravity up to date' }
-        return
-    }
-    if (-not (Test-Winget)) { return }
-    Invoke-Winget -Id 'Google.Antigravity' | Out-Null
-    Update-SessionPath
-    if (-not $DryRun) { Write-Ok 'Antigravity installed' }
-}
-
-# Antigravity's CLI prints a harmless "antigravityAnalytics ... NOT registered"
-# warning and may exit non-zero even when the extension installs fine, so we
-# judge success by the output text, not the exit code. --install-extension is
-# itself idempotent (installs or upgrades to the latest), which is why there is
-# no separate "already installed" check (its --list-extensions is unreliable).
-function Install-ExtViaCli {
-    param([string] $Cli, [string] $Target)
-    $output = (& $Cli --install-extension $Target --force 2>&1 | Out-String)
-    if ($output.Trim()) { Write-Host $output.Trim() -ForegroundColor DarkGray }
-    return ($output -match 'successfully installed' -or
-            $output -match 'already installed' -or
-            $LASTEXITCODE -eq 0)
+# Antigravity's CLI prints a harmless "antigravityAnalytics NOT registered"
+# warning to stderr; its real output (the extension list) goes to stdout, which
+# Invoke-Capture reads cleanly. Returned ids are lower-cased for comparison.
+function Get-AntigravityExtensions {
+    param([string] $Cli)
+    if (-not $Cli) { return @() }
+    $r = Invoke-Capture -Label 'listing extensions' -FilePath $Cli -Arguments @('--list-extensions') -Quiet
+    return @($r.StdOut -split "`r?`n" | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 }
 
 function Install-AntigravityExtension {
-    param(
-        [string] $ExtId,
-        [string] $Cli,
-        [string] $VsixUrl
-    )
-    if (-not $Cli) { Write-Dry "install extension $ExtId via Antigravity CLI"; return }
-    if ($DryRun) { Write-Dry "install extension $ExtId (open-vsx, VSIX fallback)"; return }
+    param([string] $ExtId, [string] $Cli, [string] $VsixUrl, [string[]] $Existing)
+    if ($Existing -contains $ExtId.ToLower()) { Write-Skip "$ExtId already installed"; return }
+    if ($DryRun) { Write-Dry "install extension $ExtId"; return }
 
-    if (Install-ExtViaCli -Cli $Cli -Target $ExtId) { Write-Ok "$ExtId installed"; return }
+    $r = Invoke-Capture -Label "Installing $ExtId" -FilePath $Cli -Arguments @('--install-extension', $ExtId, '--force')
+    if (($r.StdOut + $r.StdErr) -match 'successfully installed' -or
+        (Get-AntigravityExtensions -Cli $Cli) -contains $ExtId.ToLower()) {
+        Write-Ok "$ExtId installed"; return
+    }
 
     if ($VsixUrl) {
         Write-Warn "registry install unconfirmed for $ExtId, trying VSIX fallback"
         try {
             $tmp = Join-Path $env:TEMP ("{0}.vsix" -f ($ExtId -replace '[^\w.-]', '_'))
             Invoke-WebRequest -Uri $VsixUrl -OutFile $tmp -UseBasicParsing
-            if (Install-ExtViaCli -Cli $Cli -Target $tmp) { Write-Ok "$ExtId installed from VSIX" }
+            [void](Invoke-Capture -Label "Installing $ExtId (VSIX)" -FilePath $Cli -Arguments @('--install-extension', $tmp, '--force'))
+            if ((Get-AntigravityExtensions -Cli $Cli) -contains $ExtId.ToLower()) { Write-Ok "$ExtId installed from VSIX" }
             else { Write-Err "failed to install $ExtId" }
         }
         catch { Write-Err "VSIX fallback failed for $ExtId ($($_.Exception.Message))" }
     }
-    else {
-        Write-Err "failed to confirm install of $ExtId"
-    }
+    else { Write-Err "failed to confirm install of $ExtId" }
 }
 
 function Install-Extensions {
     Write-Step 'Antigravity extensions'
+    if ($DryRun) { Write-Dry 'install Claude Code + Claude RTL extensions'; return }
     $cli = Find-AntigravityCli
-    if (-not $cli -and -not $DryRun) {
-        Write-Warn 'Antigravity CLI not found; open Antigravity once, then re-run.'
-        return
-    }
-    Install-AntigravityExtension -ExtId $script:ExtClaudeCode -Cli $cli -VsixUrl $null
-    Install-AntigravityExtension -ExtId $script:ExtClaudeRtl  -Cli $cli -VsixUrl $script:RtlVsixUrl
+    if (-not $cli) { Write-Warn 'Antigravity CLI not found; open Antigravity once, then re-run.'; return }
+    $existing = Get-AntigravityExtensions -Cli $cli
+    Install-AntigravityExtension -ExtId $script:ExtClaudeCode -Cli $cli -VsixUrl $null -Existing $existing
+    Install-AntigravityExtension -ExtId $script:ExtClaudeRtl -Cli $cli -VsixUrl $script:RtlVsixUrl -Existing $existing
 }
 
 function Install-ClaudeCli {
@@ -248,30 +246,32 @@ function Install-ClaudeCli {
     $claudeExe = Join-Path $script:ClaudeBinDir 'claude.exe'
     if ((Test-CommandExists 'claude') -or (Test-Path $claudeExe)) {
         if ($DryRun) { Write-Dry 'claude update' }
-        else { & claude update | Out-Host; Write-Ok 'Claude CLI up to date' }
+        else {
+            $claudeCmd = (Get-Command claude -ErrorAction SilentlyContinue).Source
+            if (-not $claudeCmd) { $claudeCmd = $claudeExe }
+            [void](Invoke-Capture -Label 'Updating Claude CLI' -FilePath $claudeCmd -Arguments @('update'))
+            Write-Ok 'Claude CLI up to date'
+        }
         Add-ToUserPath $script:ClaudeBinDir
         return
     }
-    if ($DryRun) {
-        Write-Dry 'install Claude Code CLI (claude.ai/install.ps1)'
-    }
-    else {
-        $installer = Invoke-RestMethod -Uri 'https://claude.ai/install.ps1'
-        & ([scriptblock]::Create($installer))
-    }
-    # The native installer drops claude in %USERPROFILE%\.local\bin - guarantee PATH.
+    if ($DryRun) { Write-Dry 'install Claude Code CLI (claude.ai/install.ps1)'; Add-ToUserPath $script:ClaudeBinDir; return }
+    Write-Host '   installing Claude Code CLI...' -ForegroundColor DarkGray
+    $installer = Invoke-RestMethod -Uri 'https://claude.ai/install.ps1'
+    & ([scriptblock]::Create($installer))
     Add-ToUserPath $script:ClaudeBinDir
-    if (-not $DryRun) { Write-Ok 'Claude CLI installed' }
+    if ((Test-CommandExists 'claude') -or (Test-Path $claudeExe)) { Write-Ok 'Claude CLI installed' }
+    else { Write-Warn 'Claude CLI install did not complete; see output above' }
 }
 
 # ----------------------------------------------------------------------------
-# Verification (fresh shell proves PATH + policy took effect)
+# Verification
 # ----------------------------------------------------------------------------
 function Get-FreshVersion {
     param([string] $Command, [string] $VersionArg = '--version')
     try {
         $out = & powershell -NoProfile -Command "& { (& $Command $VersionArg) 2>`$null }" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $out) { return ($out | Select-Object -First 1).ToString().Trim() }
+        if ($out) { return ($out | Select-Object -First 1).ToString().Trim() }
     }
     catch { Write-Verbose "version probe failed for $Command" }
     return $null
@@ -280,29 +280,30 @@ function Get-FreshVersion {
 function Invoke-Verify {
     Write-Step 'Verifying (fresh shell)'
     $rows = @()
-    foreach ($tool in @(
-        @{ Name = 'git'; Cmd = 'git' },
-        @{ Name = 'node'; Cmd = 'node' },
-        @{ Name = 'npm'; Cmd = 'npm' },
-        @{ Name = 'claude'; Cmd = 'claude' }
-    )) {
-        $v = Get-FreshVersion -Command $tool.Cmd
-        $rows += [pscustomobject]@{ Tool = $tool.Name; Status = if ($v) { 'OK' } else { 'MISSING' }; Version = $v }
+    foreach ($name in 'git', 'node', 'npm', 'claude') {
+        $v = Get-FreshVersion -Command $name
+        $rows += [pscustomobject]@{ Tool = $name; Status = $(if ($v) { 'OK' } else { 'MISSING' }); Detail = $v }
     }
 
     $cli = Find-AntigravityCli
-    $rows += [pscustomobject]@{ Tool = 'antigravity'; Status = if ($cli) { 'OK' } else { 'MISSING' }; Version = $cli }
+    $rows += [pscustomobject]@{ Tool = 'antigravity'; Status = $(if ($cli) { 'OK' } else { 'MISSING' }); Detail = $cli }
 
-    # Antigravity's --list-extensions is unreliable (analytics dependency error),
-    # so extensions cannot be confirmed from the CLI. They are installed via the
-    # idempotent --install-extension; verify visually in the IDE if needed.
-    $rows += [pscustomobject]@{ Tool = 'extensions'; Status = 'INFO'; Version = 'installed via CLI; confirm in Antigravity Extensions panel' }
+    if ($cli) {
+        $exts = Get-AntigravityExtensions -Cli $cli
+        $haveCode = $exts -contains $script:ExtClaudeCode.ToLower()
+        $haveRtl = $exts -contains $script:ExtClaudeRtl.ToLower()
+        $state = if ($haveCode -and $haveRtl) { 'OK' } elseif ($haveCode -or $haveRtl) { 'PARTIAL' } else { 'MISSING' }
+        $rows += [pscustomobject]@{ Tool = 'extensions'; Status = $state; Detail = "claude-code=$haveCode rtl=$haveRtl" }
+    }
+    else {
+        $rows += [pscustomobject]@{ Tool = 'extensions'; Status = 'MISSING'; Detail = 'Antigravity CLI not found' }
+    }
 
     $rows | Format-Table -AutoSize | Out-Host
 
     $missing = $rows | Where-Object { $_.Status -eq 'MISSING' }
     if ($missing) {
-        Write-Warn ("missing: " + ($missing.Tool -join ', '))
+        Write-Warn ('missing: ' + ($missing.Tool -join ', '))
         Write-Warn 'Open a NEW terminal (PATH changes apply to new shells). If Antigravity/extensions are missing, open Antigravity once then re-run.'
         return $false
     }
@@ -313,6 +314,12 @@ function Invoke-Verify {
 # ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
+function Invoke-Safe {
+    param([string] $Name, [scriptblock] $Action)
+    try { & $Action }
+    catch { Write-Err "$Name step failed: $($_.Exception.Message)" }
+}
+
 function Main {
     if ($PSVersionTable.PSVersion.Major -lt 5) {
         Write-Err "PowerShell 5.1+ required (found $($PSVersionTable.PSVersion))."
@@ -322,21 +329,29 @@ function Main {
     Write-Host 'claude-dev-setup (Windows)' -ForegroundColor White
     if ($DryRun) { Write-Warn 'DRY RUN - nothing will be installed' }
 
-    Set-ExecutionPolicyIfRestricted
-    Install-Git
-    Install-Node
-    Install-Antigravity
-    Install-Extensions
-    Install-ClaudeCli
+    Invoke-Safe 'ExecutionPolicy' { Set-ExecutionPolicyIfRestricted }
+    Invoke-Safe 'git' { Install-Git }
+    Invoke-Safe 'Node.js' { Install-Node }
+    Invoke-Safe 'Antigravity' { Install-Antigravity }
+    Invoke-Safe 'extensions' { Install-Extensions }
+    Invoke-Safe 'Claude CLI' { Install-ClaudeCli }
 
     $ok = Invoke-Verify
     Write-Host ''
-    if ($ok) {
-        Write-Host 'Done. Open a NEW terminal and run: claude' -ForegroundColor Green
+    if ($ok) { Write-Host 'Done. Open a NEW terminal and run: claude' -ForegroundColor Green }
+    else { Write-Host 'Finished with warnings - see above. Open a new terminal to pick up PATH changes.' -ForegroundColor Yellow }
+}
+
+function Install-Antigravity {
+    Write-Step 'Antigravity IDE'
+    if (Find-AntigravityCli) {
+        [void](Invoke-Winget -Label 'Upgrading Antigravity' -Verb 'upgrade' -Id 'Google.Antigravity')
+        if (-not $DryRun) { Write-Ok 'Antigravity up to date' }
+        return
     }
-    else {
-        Write-Host 'Finished with warnings - see above. Open a new terminal to pick up PATH changes.' -ForegroundColor Yellow
-    }
+    if (-not (Invoke-Winget -Label 'Installing Antigravity' -Verb 'install' -Id 'Google.Antigravity')) { return }
+    Update-SessionPath
+    if (-not $DryRun) { Write-Ok 'Antigravity installed' }
 }
 
 Main
