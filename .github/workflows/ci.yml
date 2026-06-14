@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  posix:
+    name: posix (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck --version
+          elif command -v brew >/dev/null 2>&1; then
+            brew install shellcheck
+          else
+            sudo apt-get update && sudo apt-get install -y shellcheck
+          fi
+
+      - name: shellcheck
+        run: shellcheck -S style install.sh tests/smoke.sh
+
+      - name: Syntax + dry-run smoke test
+        run: bash tests/smoke.sh
+
+  windows:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path .\install.ps1 -Settings .\PSScriptAnalyzerSettings.psd1
+          $results | Format-Table -AutoSize
+          if ($results | Where-Object Severity -in 'Error','Warning') {
+            throw "PSScriptAnalyzer reported errors/warnings"
+          }
+
+      - name: Parse + dry-run smoke test
+        shell: pwsh
+        run: .\tests\smoke.ps1
