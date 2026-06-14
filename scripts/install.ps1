@@ -313,15 +313,16 @@ if ($cli) { & $cli --list-extensions --show-versions 2>$null }
     $okGit = [bool]$gitRaw; $okNode = [bool]$nodeRaw; $okClaude = [bool]$claudeRaw
     $okAg = [bool]$cli; $okCode = [bool]$codeVer; $okRtl = [bool]$rtlVer
 
+    $rule = ([char]0x2500).ToString() * 52
     Write-Host ''
+    Write-Host '  Installed and ready' -ForegroundColor Cyan
+    Write-Host "  $rule" -ForegroundColor DarkGray
     Write-Check 'Git'               (Format-Detail $okGit $gitVer)       $okGit
     Write-Check 'Node.js'           (Format-Detail $okNode $nodeRaw)     $okNode
     Write-Check 'Antigravity'       (Format-Detail $okAg $agVer)         $okAg
     Write-Check 'Claude in editor'  (Format-Detail $okCode $codeVer)     $okCode
     Write-Check 'Hebrew support'    (Format-Detail $okRtl $rtlVer)       $okRtl
     Write-Check 'Claude command'    (Format-Detail $okClaude $claudeVer) $okClaude
-
-    $rule = ([char]0x2500).ToString() * 52
     Write-Host "  $rule" -ForegroundColor DarkGray
 
     $allOk = $okGit -and $okNode -and $okAg -and $okCode -and $okRtl -and $okClaude

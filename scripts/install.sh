@@ -102,15 +102,15 @@ run_quiet() {
         ( "$@" >"$log" 2>&1 ) &
         local pid=$! frames="|/-\\" i=0
         while kill -0 "$pid" 2>/dev/null; do
-            printf '\r  %s  %s...   ' "${frames:$((i % 4)):1}" "$label"
+            printf '\r  %s  %s   ' "${frames:$((i % 4)):1}" "$label"
             i=$((i + 1)); sleep 0.12
         done
-        printf '\r%*s\r' 64 ''
         wait "$pid" 2>/dev/null || true
         rm -f "$log"
+        printf '\r  %s%s%s  %s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label"
     else
-        printf '  %s...\n' "$label"
-        "$@" || true
+        "$@" >/dev/null 2>&1 || true
+        printf '  %s%s%s  %s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label"
     fi
     return 0
 }
@@ -324,14 +324,19 @@ install_one_extension() {
     fi
 }
 
+setup_extensions() {
+    local cli="$1" existing
+    existing="$(antigravity_extensions "$cli")"
+    install_one_extension "$EXT_CLAUDE_CODE" "$cli" "" "$existing"
+    install_one_extension "$EXT_CLAUDE_RTL" "$cli" "$RTL_VSIX_URL" "$existing"
+}
+
 install_extensions() {
     $DRY_RUN && return 0
-    local cli existing
+    local cli
     cli="$(find_antigravity_cli 2>/dev/null || true)"
     [ -z "$cli" ] && return 0
-    existing="$(antigravity_extensions "$cli")"
-    run_quiet "Adding Claude to the editor" install_one_extension "$EXT_CLAUDE_CODE" "$cli" "" "$existing"
-    run_quiet "Adding Hebrew/Arabic support" install_one_extension "$EXT_CLAUDE_RTL" "$cli" "$RTL_VSIX_URL" "$existing"
+    run_quiet "Setting up editor extensions" setup_extensions "$cli"
 }
 
 # --------------------------------------------------------------------------
@@ -350,28 +355,64 @@ install_claude_cli() {
 }
 
 # --------------------------------------------------------------------------
-# Results checklist
+# Results checklist (with versions)
 # --------------------------------------------------------------------------
-show_results() {
-    local ok_git=0 ok_node=0 ok_claude=0 ok_ag=0 ok_code=0 ok_rtl=0 cli
-    has_command git && ok_git=1
-    has_command node && ok_node=1
-    { has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; } && ok_claude=1
-    cli="$(find_antigravity_cli 2>/dev/null || true)"
-    [ -n "$cli" ] && ok_ag=1
-    if [ -n "$cli" ]; then
-        local exts; exts="$(antigravity_extensions "$cli")"
-        printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_CODE" | tr '[:upper:]' '[:lower:]')" && ok_code=1
-        printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_RTL" | tr '[:upper:]' '[:lower:]')" && ok_rtl=1
+detail() {
+    # detail <ok 0|1> <version>
+    if [ "$1" = 1 ]; then
+        if [ -n "$2" ]; then printf '%s' "$2"; else printf 'installed'; fi
+    else
+        printf 'not found'
     fi
+}
+
+# Collect every tool's version into a file (so one spinner can cover the wait).
+gather_versions() {
+    local cli="$1" out="$2"
+    {
+        printf 'GIT=%s\n' "$(git --version 2>/dev/null | head -1)"
+        printf 'NODE=%s\n' "$(node --version 2>/dev/null | head -1)"
+        printf 'CLAUDE=%s\n' "$( { claude --version 2>/dev/null || "$CLAUDE_BIN_DIR/claude" --version 2>/dev/null; } | head -1)"
+        if [ -n "$cli" ]; then
+            printf 'AG=%s\n' "$("$cli" --version 2>/dev/null | head -1)"
+            "$cli" --list-extensions --show-versions 2>/dev/null
+        fi
+    } >"$out" 2>/dev/null
+}
+
+show_results() {
+    local cli vfile
+    cli="$(find_antigravity_cli 2>/dev/null || true)"
+    vfile="$(mktemp)"
+    if $DRY_RUN; then gather_versions "$cli" "$vfile"
+    else run_quiet "Checking everything is in place" gather_versions "$cli" "$vfile"; fi
+
+    local git_v node_v claude_v ag_v code_v rtl_v
+    git_v="$(sed -n 's/^GIT=//p' "$vfile" | sed 's/^git version //')"
+    node_v="$(sed -n 's/^NODE=//p' "$vfile")"
+    claude_v="$(sed -n 's/^CLAUDE=//p' "$vfile" | awk '{print $1}')"
+    ag_v="$(sed -n 's/^AG=//p' "$vfile" | awk '{print $1}')"
+    code_v="$(grep -iE 'anthropic\.claude-code@' "$vfile" | head -1 | sed 's/.*@//')"
+    rtl_v="$(grep -iE 'adiryad\.claude-rtl-code@' "$vfile" | head -1 | sed 's/.*@//')"
+    rm -f "$vfile"
+
+    local ok_git=0 ok_node=0 ok_claude=0 ok_ag=0 ok_code=0 ok_rtl=0
+    [ -n "$git_v" ] && ok_git=1
+    [ -n "$node_v" ] && ok_node=1
+    [ -n "$claude_v" ] && ok_claude=1
+    [ -n "$cli" ] && ok_ag=1
+    [ -n "$code_v" ] && ok_code=1
+    [ -n "$rtl_v" ] && ok_rtl=1
 
     echo
-    check_row "$ok_git" "Git" "keeps track of your code"
-    check_row "$ok_node" "Node.js" "runs your tools"
-    check_row "$ok_ag" "Antigravity" "your code editor"
-    check_row "$ok_code" "Claude in editor" "chat with Claude while you build"
-    check_row "$ok_rtl" "Hebrew support" "right-to-left text in the editor"
-    check_row "$ok_claude" "Claude command" "use Claude from the terminal"
+    printf '  %sInstalled and ready%s\n' "$C_CYAN" "$C_RESET"
+    rule_line
+    check_row "$ok_git" "Git" "$(detail "$ok_git" "$git_v")"
+    check_row "$ok_node" "Node.js" "$(detail "$ok_node" "$node_v")"
+    check_row "$ok_ag" "Antigravity" "$(detail "$ok_ag" "$ag_v")"
+    check_row "$ok_code" "Claude in editor" "$(detail "$ok_code" "$code_v")"
+    check_row "$ok_rtl" "Hebrew support" "$(detail "$ok_rtl" "$rtl_v")"
+    check_row "$ok_claude" "Claude command" "$(detail "$ok_claude" "$claude_v")"
     rule_line
 
     if [ "$ok_git" = 1 ] && [ "$ok_node" = 1 ] && [ "$ok_ag" = 1 ] && [ "$ok_code" = 1 ] && [ "$ok_rtl" = 1 ] && [ "$ok_claude" = 1 ]; then
