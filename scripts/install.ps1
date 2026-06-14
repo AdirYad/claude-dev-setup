@@ -78,9 +78,10 @@ function Write-Note { param([string] $Message) Write-Host "  $Message" -Foregrou
 # ----------------------------------------------------------------------------
 # Run an external program, capturing its output to files so it can neither spam
 # the console nor turn its stderr into a crash. Shows an animated spinner that
-# overwrites itself in place ("/ Checking Git") and clears the line when done.
-# We do NOT gate on [Console]::IsOutputRedirected (it is True under `irm | iex`
-# yet the console still handles the carriage return just fine).
+# overwrites itself in place ("/ Checking Git") and then leaves a persistent
+# "checkmark + label" line, so the progress log stays on screen. We do NOT gate
+# on [Console]::IsOutputRedirected (it is True under `irm | iex` yet the console
+# still handles the carriage return just fine).
 # ----------------------------------------------------------------------------
 function Invoke-Capture {
     param(
@@ -104,7 +105,11 @@ function Invoke-Capture {
             Start-Sleep -Milliseconds 120
         }
         $p.WaitForExit()
-        if (-not $Quiet) { Write-Host ("`r" + (' ' * ($Label.Length + 10)) + "`r") -NoNewline }
+        if (-not $Quiet) {
+            Write-Host "`r  " -NoNewline
+            Write-Host $script:Check -NoNewline -ForegroundColor Green
+            Write-Host ("  {0}" -f $Label) -ForegroundColor Gray
+        }
         $so = if (Test-Path $outFile) { [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         $se = if (Test-Path $errFile) { [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         return [pscustomobject]@{ StdOut = $so; StdErr = $se }
@@ -203,10 +208,16 @@ function Install-Antigravity {
 
 # Antigravity's CLI prints a harmless analytics warning to stderr; its real
 # output (the extension list) goes to stdout. Returned ids are lower-cased.
+# Pass -Label to show a spinner (used during install); omit it to run quietly.
 function Get-AntigravityExtensions {
-    param([string] $Cli)
+    param([string] $Cli, [string] $Label)
     if (-not $Cli) { return @() }
-    $r = Invoke-Capture -Label 'listing extensions' -FilePath $Cli -Arguments @('--list-extensions') -Quiet
+    $r = if ($Label) {
+        Invoke-Capture -Label $Label -FilePath $Cli -Arguments @('--list-extensions')
+    }
+    else {
+        Invoke-Capture -Label 'list' -FilePath $Cli -Arguments @('--list-extensions') -Quiet
+    }
     return @($r.StdOut -split "`r?`n" | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 }
 
@@ -230,7 +241,7 @@ function Install-Extensions {
     if ($DryRun) { return }
     $cli = Find-AntigravityCli
     if (-not $cli) { return }
-    $existing = Get-AntigravityExtensions -Cli $cli
+    $existing = Get-AntigravityExtensions -Cli $cli -Label 'Setting up editor extensions'
     Install-AntigravityExtension -ExtId $script:ExtClaudeCode -Cli $cli -VsixUrl $null -Existing $existing -Label 'Adding Claude to the editor'
     Install-AntigravityExtension -ExtId $script:ExtClaudeRtl -Cli $cli -VsixUrl $script:RtlVsixUrl -Existing $existing -Label 'Adding Hebrew/Arabic support'
 }
@@ -254,46 +265,66 @@ function Install-ClaudeCli {
 }
 
 # ----------------------------------------------------------------------------
-# Verification -> friendly checklist
+# Verification -> friendly checklist with versions
 # ----------------------------------------------------------------------------
-function Test-FreshCommand {
-    param([string] $Command)
-    try {
-        $out = & powershell -NoProfile -Command "& { (& $Command --version) 2>`$null }" 2>$null
-        return [bool]$out
-    }
-    catch { return $false }
+function Format-Detail {
+    param([bool] $Ok, [string] $Version)
+    if (-not $Ok) { return 'not found' }
+    if ($Version) { return $Version }
+    return 'installed'
 }
 
 function Show-Results {
-    Write-Host '  Checking everything is in place' -NoNewline -ForegroundColor Cyan
-    $okGit    = Test-FreshCommand 'git';    Write-Host '.' -NoNewline -ForegroundColor Cyan
-    $okNode   = Test-FreshCommand 'node';   Write-Host '.' -NoNewline -ForegroundColor Cyan
-    $okClaude = Test-FreshCommand 'claude'; Write-Host '.' -NoNewline -ForegroundColor Cyan
-
     $cli = Find-AntigravityCli
-    $okAg = [bool]$cli
-    $okExtCode = $false
-    $okExtRtl = $false
-    if ($cli) {
-        $exts = Get-AntigravityExtensions -Cli $cli
-        $okExtCode = $exts -contains $script:ExtClaudeCode.ToLower()
-        $okExtRtl  = $exts -contains $script:ExtClaudeRtl.ToLower()
-    }
-    Write-Host '.' -ForegroundColor Cyan
+
+    # Gather every version inside one child process so a single spinner can cover
+    # the whole check. The child inherits this session's PATH.
+    $gather = @'
+$ErrorActionPreference = 'SilentlyContinue'
+function V($exe, $a) { try { $o = & $exe $a 2>$null; if ($o) { return ([string](@($o)[0])).Trim() } } catch {} return '' }
+$cli = '__CLI__'
+'GIT=' + (V 'git' '--version')
+'NODE=' + (V 'node' '--version')
+'CLAUDE=' + (V 'claude' '--version')
+'AG=' + $(if ($cli) { V $cli '--version' } else { '' })
+'EXTSTART'
+if ($cli) { & $cli --list-extensions --show-versions 2>$null }
+'EXTEND'
+'@
+    $gather = $gather -replace '__CLI__', (([string]$cli) -replace "'", "''")
+    $gatherPath = Join-Path $env:TEMP 'cds-verify.ps1'
+    Set-Content -Path $gatherPath -Value $gather -Encoding UTF8
+    $out = (Invoke-Capture -Label 'Checking everything is in place' -FilePath 'powershell' -Arguments @('-NoProfile', '-File', $gatherPath)).StdOut
+    Remove-Item $gatherPath -ErrorAction SilentlyContinue
+
+    $gitRaw    = ([regex]::Match($out, 'GIT=(.*)')).Groups[1].Value.Trim()
+    $nodeRaw   = ([regex]::Match($out, 'NODE=(.*)')).Groups[1].Value.Trim()
+    $claudeRaw = ([regex]::Match($out, 'CLAUDE=(.*)')).Groups[1].Value.Trim()
+    $agRaw     = ([regex]::Match($out, 'AG=(.*)')).Groups[1].Value.Trim()
+    $extLower  = ''
+    if ($out -match '(?s)EXTSTART(.*)EXTEND') { $extLower = $Matches[1].ToLower() }
+
+    $gitVer    = ($gitRaw -replace '^git version ', '')
+    $claudeVer = (($claudeRaw -split '\s+') | Select-Object -First 1)
+    $agVer     = (($agRaw -split '\s+') | Select-Object -First 1)
+    $codeVer   = ([regex]::Match($extLower, 'anthropic\.claude-code@(\S+)')).Groups[1].Value
+    $rtlVer    = ([regex]::Match($extLower, 'adiryad\.claude-rtl-code@(\S+)')).Groups[1].Value
+
+    $okGit = [bool]$gitRaw; $okNode = [bool]$nodeRaw; $okClaude = [bool]$claudeRaw
+    $okAg = [bool]$cli; $okCode = [bool]$codeVer; $okRtl = [bool]$rtlVer
 
     Write-Host ''
-    Write-Check 'Git'                'keeps track of your code'          $okGit
-    Write-Check 'Node.js'           'runs your tools'                   $okNode
-    Write-Check 'Antigravity'       'your code editor'                  $okAg
-    Write-Check 'Claude in editor'  'chat with Claude while you build'  $okExtCode
-    Write-Check 'Hebrew support'    'right-to-left text in the editor'  $okExtRtl
-    Write-Check 'Claude command'    'use Claude from the terminal'      $okClaude
+    Write-Check 'Git'               (Format-Detail $okGit $gitVer)       $okGit
+    Write-Check 'Node.js'           (Format-Detail $okNode $nodeRaw)     $okNode
+    Write-Check 'Antigravity'       (Format-Detail $okAg $agVer)         $okAg
+    Write-Check 'Claude in editor'  (Format-Detail $okCode $codeVer)     $okCode
+    Write-Check 'Hebrew support'    (Format-Detail $okRtl $rtlVer)       $okRtl
+    Write-Check 'Claude command'    (Format-Detail $okClaude $claudeVer) $okClaude
 
     $rule = ([char]0x2500).ToString() * 52
     Write-Host "  $rule" -ForegroundColor DarkGray
 
-    $allOk = $okGit -and $okNode -and $okAg -and $okExtCode -and $okExtRtl -and $okClaude
+    $allOk = $okGit -and $okNode -and $okAg -and $okCode -and $okRtl -and $okClaude
     if ($allOk) {
         Write-Host ''
         Write-Host '  You are all set. Everything is installed and ready to go.' -ForegroundColor Green
@@ -303,7 +334,7 @@ function Show-Results {
         Write-Host ''
         Write-Note 'Almost there. A few things did not finish installing.'
         Write-Note 'Please run this command again. If it keeps happening, restart your computer and retry.'
-        if (-not $okAg -or -not $okExtCode -or -not $okExtRtl) {
+        if (-not $okAg -or -not $okCode -or -not $okRtl) {
             Write-Note 'If Antigravity is new, open it once (you will sign in with Google), then run this again.'
         }
         Write-Host ''
