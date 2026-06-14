@@ -16,7 +16,9 @@ if ($errors -and $errors.Count -gt 0) {
 }
 
 Write-Host '== -DryRun =='
-$out = & $script -DryRun 2>&1 | Out-String
+# The installer prints via Write-Host (PowerShell information stream #6), so we
+# must merge ALL streams (*>&1), not just stderr (2>&1), to capture its output.
+$out = & $script -DryRun *>&1 | Out-String
 Write-Host $out
 
 if ($out -notmatch 'DRY RUN') { throw 'FAIL: dry-run banner missing' }
