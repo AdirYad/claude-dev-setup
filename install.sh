@@ -318,7 +318,9 @@ install_one_extension() {
     ext_is_installed "$cli" "$id_lc" && return 0
     if [ -n "$vsix_url" ]; then
         local vsix; vsix="$(mktemp -d)/ext.vsix"
-        curl -fsSL "$vsix_url" -o "$vsix" 2>/dev/null && "$cli" --install-extension "$vsix" --force >/dev/null 2>&1 || true
+        if curl -fsSL "$vsix_url" -o "$vsix" 2>/dev/null; then
+            "$cli" --install-extension "$vsix" --force >/dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -407,7 +409,7 @@ main() {
     install_antigravity || true
     install_extensions || true
     install_claude_cli || true
-    [ -n "$SUDO_KEEPALIVE_PID" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    if [ -n "$SUDO_KEEPALIVE_PID" ]; then kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true; fi
 
     show_results
 }
