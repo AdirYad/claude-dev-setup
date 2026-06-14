@@ -6,6 +6,7 @@
         'PSAvoidUsingWriteHost',                     # a CLI installer prints to the host on purpose
         'PSUseShouldProcessForStateChangingFunctions', # internal helpers, not exported cmdlets
         'PSUseSingularNouns',                         # e.g. Install-Extensions reads better plural
-        'PSReviewUnusedParameter'                    # false positive: script params are used inside nested functions
+        'PSReviewUnusedParameter',                   # false positive: script params are used inside nested functions
+        'PSAvoidUsingPositionalParameters'           # our own tiny Write-* helpers read fine positionally
     )
 }

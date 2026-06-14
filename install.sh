@@ -33,9 +33,7 @@ ANTIGRAVITY_MAC_VER2="6481382726303744"
 # Optional override: point at a downloaded Antigravity .deb to auto-install on Linux.
 LINUX_ANTIGRAVITY_DEB_URL="${LINUX_ANTIGRAVITY_DEB_URL:-}"
 
-# --------------------------------------------------------------------------
-# Flags (internal/testing only: --dry-run. Users never need a flag.)
-# --------------------------------------------------------------------------
+# Internal/testing only flag.
 DRY_RUN=false
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,46 +44,75 @@ while [ $# -gt 0 ]; do
 done
 
 # --------------------------------------------------------------------------
-# Logging
+# Pretty output
 # --------------------------------------------------------------------------
 if [ -t 1 ]; then
     C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'; C_GRAY=$'\033[90m'
-    C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_MAGENTA=$'\033[35m'; C_RESET=$'\033[0m'
+    C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_RESET=$'\033[0m'
 else
-    C_CYAN=""; C_GREEN=""; C_GRAY=""; C_YELLOW=""; C_RED=""; C_MAGENTA=""; C_RESET=""
+    C_CYAN=""; C_GREEN=""; C_GRAY=""; C_YELLOW=""; C_RED=""; C_RESET=""
 fi
+CHECK=$'\xe2\x9c\x93'   # check mark
+CROSS=$'\xe2\x9c\x97'   # ballot x
 
-step() { printf '\n%s=> %s%s\n' "$C_CYAN" "$1" "$C_RESET"; }
-ok()   { printf '   %s[ok]   %s%s\n' "$C_GREEN" "$1" "$C_RESET"; }
-skip() { printf '   %s[skip] %s%s\n' "$C_GRAY" "$1" "$C_RESET"; }
-warn() { printf '   %s[warn] %s%s\n' "$C_YELLOW" "$1" "$C_RESET"; }
-err()  { printf '   %s[err]  %s%s\n' "$C_RED" "$1" "$C_RESET" >&2; }
-dry()  { printf '   %s[dry]  would %s%s\n' "$C_MAGENTA" "$1" "$C_RESET"; }
-info() { printf '   %s\n' "$1"; }
+banner() {
+    local rule; rule="$(printf '\xe2\x94\x80%.0s' $(seq 1 52))"
+    printf '\n  %sClaude Dev Setup%s\n' "$C_CYAN" "$C_RESET"
+    printf '  %sGetting your computer ready to build with Claude%s\n' "$C_GRAY" "$C_RESET"
+    printf '  %s%s%s\n\n' "$C_GRAY" "$rule" "$C_RESET"
+}
+
+rule_line() { printf '  %s%s%s\n' "$C_GRAY" "$(printf '\xe2\x94\x80%.0s' $(seq 1 52))" "$C_RESET"; }
+
+# A finished checklist line: green check (or red cross) + name + soft description.
+check_row() {
+    local ok="$1" name="$2" desc="$3" mark color
+    if [ "$ok" = 1 ]; then mark="$CHECK"; color="$C_GREEN"; else mark="$CROSS"; color="$C_RED"; fi
+    printf '  %s%s%s  %-19s%s%s%s\n' "$color" "$mark" "$C_RESET" "$name" "$C_GRAY" "$desc" "$C_RESET"
+}
+
+note() { printf '  %s%s%s\n' "$C_YELLOW" "$1" "$C_RESET"; }
 
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
 has_command() { command -v "$1" >/dev/null 2>&1; }
 
-# Run a command with root privileges: directly when already root (e.g. inside a
-# container), via sudo otherwise. Fails clearly when neither is possible.
+# Run a command with root privileges: directly when already root, via sudo
+# otherwise (credentials are pre-authorized once in main).
 as_root() {
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
     elif has_command sudo; then
         sudo "$@"
     else
-        err "this step needs root (install sudo or run as root): $*"
         return 1
     fi
 }
 
-# step_run "description" cmd args...   (respects --dry-run)
-step_run() {
-    local desc="$1"; shift
-    if $DRY_RUN; then dry "$desc"; return 0; fi
-    "$@"
+# Run a command behind a clean inline spinner, hiding its output. In a real
+# terminal we capture output and animate; otherwise (CI/logs) we run it plainly
+# so the output stays visible. Always returns 0 - the final checklist is the
+# source of truth for what actually succeeded.
+run_quiet() {
+    local label="$1"; shift
+    $DRY_RUN && return 0
+    if [ -t 1 ]; then
+        local log; log="$(mktemp)"
+        ( "$@" >"$log" 2>&1 ) &
+        local pid=$! frames="|/-\\" i=0
+        while kill -0 "$pid" 2>/dev/null; do
+            printf '\r  %s  %s...   ' "${frames:$((i % 4)):1}" "$label"
+            i=$((i + 1)); sleep 0.12
+        done
+        printf '\r%*s\r' 64 ''
+        wait "$pid" 2>/dev/null || true
+        rm -f "$log"
+    else
+        printf '  %s...\n' "$label"
+        "$@" || true
+    fi
+    return 0
 }
 
 OS=""
@@ -93,7 +120,7 @@ detect_os() {
     case "$(uname -s)" in
         Darwin) OS="mac" ;;
         Linux) OS="linux" ;;
-        *) err "unsupported OS: $(uname -s)"; exit 1 ;;
+        *) note "Sorry, this only supports macOS and Linux."; exit 1 ;;
     esac
 }
 
@@ -105,52 +132,53 @@ detect_linux_pkg() {
     PKG=""
 }
 
-# Persist a directory onto PATH (session + shell rc) once.
+# Ask for the password once up front (so the spinner never hides a sudo prompt),
+# then keep the credentials warm in the background during the install.
+SUDO_KEEPALIVE_PID=""
+ensure_sudo() {
+    $DRY_RUN && return 0
+    [ "$(id -u)" -eq 0 ] && return 0
+    has_command sudo || return 0
+    [ "$OS" = mac ] && has_command brew && return 0   # brew needs no sudo
+    note "You may be asked for your password to install software."
+    sudo -v 2>/dev/null || true
+    ( while true; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
+    SUDO_KEEPALIVE_PID=$!
+}
+
+# Quietly make sure a directory is on PATH (session + shell rc), once.
 persist_path() {
     local dir="$1" rc
     [ -z "$dir" ] && return 0
-
+    $DRY_RUN && return 0
     local files=()
     case "${SHELL:-}" in
         *zsh) files+=("$HOME/.zshrc") ;;
         *bash) files+=("$HOME/.bashrc") ;;
     esac
     files+=("$HOME/.profile")
-
     for rc in "${files[@]}"; do
-        if [ ! -f "$rc" ]; then
-            $DRY_RUN || touch "$rc"
-        fi
-        if grep -qF "$dir" "$rc" 2>/dev/null; then
-            skip "PATH in $(basename "$rc") already has $dir"
-        elif $DRY_RUN; then
-            dry "add $dir to PATH in $(basename "$rc")"
-        else
+        [ -f "$rc" ] || touch "$rc"
+        if ! grep -qF "$dir" "$rc" 2>/dev/null; then
             # $PATH is written literally on purpose: it must expand at shell
             # startup, not now.
             # shellcheck disable=SC2016
             printf '\n# claude-dev-setup\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc"
-            ok "added $dir to PATH in $(basename "$rc")"
         fi
     done
-
-    case ":$PATH:" in
-        *":$dir:"*) ;;
-        *) PATH="$dir:$PATH"; export PATH ;;
-    esac
+    case ":$PATH:" in *":$dir:"*) ;; *) PATH="$dir:$PATH"; export PATH ;; esac
 }
 
-# Install a Linux package using whatever package manager exists.
-linux_pkg_install() {
+pkg_install() {
     local pkg="$1"
     case "$PKG" in
-        apt-get) step_run "apt-get install $pkg" as_root apt-get install -y "$pkg" ;;
-        dnf) step_run "dnf install $pkg" as_root dnf install -y "$pkg" ;;
-        yum) step_run "yum install $pkg" as_root yum install -y "$pkg" ;;
-        pacman) step_run "pacman -S $pkg" as_root pacman -S --needed --noconfirm "$pkg" ;;
-        zypper) step_run "zypper install $pkg" as_root zypper install -y "$pkg" ;;
-        apk) step_run "apk add $pkg" as_root apk add "$pkg" ;;
-        *) err "no supported package manager found for $pkg"; return 1 ;;
+        apt-get) as_root apt-get install -y "$pkg" ;;
+        dnf) as_root dnf install -y "$pkg" ;;
+        yum) as_root yum install -y "$pkg" ;;
+        pacman) as_root pacman -S --needed --noconfirm "$pkg" ;;
+        zypper) as_root zypper install -y "$pkg" ;;
+        apk) as_root apk add "$pkg" ;;
+        *) return 1 ;;
     esac
 }
 
@@ -158,28 +186,16 @@ linux_pkg_install() {
 # git
 # --------------------------------------------------------------------------
 install_git() {
-    step "git"
     if has_command git; then
-        if [ "$OS" = mac ] && has_command brew; then
-            step_run "brew upgrade git" brew upgrade git || true
-            ok "git up to date"
-        else
-            skip "git already installed ($(git --version 2>/dev/null))"
-        fi
+        [ "$OS" = mac ] && has_command brew && run_quiet "Checking Git" brew upgrade git
         return 0
     fi
     if [ "$OS" = mac ]; then
-        if has_command brew; then
-            step_run "brew install git" brew install git
-        else
-            warn "git missing and no Homebrew; triggering Xcode Command Line Tools"
-            step_run "xcode-select --install" xcode-select --install || true
-            info "finish the Xcode CLT prompt, then re-run"
-        fi
+        if has_command brew; then run_quiet "Installing Git" brew install git
+        else note "Opening Apple developer tools installer (a window may appear)."; xcode-select --install >/dev/null 2>&1 || true; fi
     else
-        linux_pkg_install git
+        run_quiet "Installing Git" pkg_install git
     fi
-    if has_command git; then ok "git installed"; fi
 }
 
 # --------------------------------------------------------------------------
@@ -191,19 +207,13 @@ install_node_mac_pkg() {
         | tr -d ' ' | tr '{' '\n' \
         | grep '"lts":"' | grep -v '"lts":false' \
         | head -1 | sed -E 's/.*"version":"(v[0-9.]+)".*/\1/')"
-    if [ -z "$ver" ]; then
-        err "could not resolve latest Node LTS version"
-        return 1
-    fi
+    [ -z "$ver" ] && return 1
     pkg="$(mktemp -d)/node-${ver}.pkg"
-    arch="$(uname -m)"
-    info "downloading Node ${ver} (${arch}) official pkg"
+    arch="$(uname -m)"; : "$arch"
     curl -fsSL "https://nodejs.org/dist/${ver}/node-${ver}.pkg" -o "$pkg"
     as_root installer -pkg "$pkg" -target /
 }
 
-# NodeSource setup script (run as root), then install nodejs. Avoids piping
-# curl straight into sudo so it works as root (no sudo) and as a normal user.
 install_node_nodesource() {
     local setup_url="$1" setup
     setup="$(mktemp -d)/nodesource_setup.sh"
@@ -213,39 +223,22 @@ install_node_nodesource() {
 }
 
 install_node() {
-    step "Node.js LTS"
     if has_command node; then
-        if [ "$OS" = mac ] && has_command brew; then
-            step_run "brew upgrade node" brew upgrade node || true
-            ok "Node up to date"
-        else
-            skip "Node already installed ($(node --version 2>/dev/null))"
-        fi
+        [ "$OS" = mac ] && has_command brew && run_quiet "Checking Node.js" brew upgrade node
         return 0
     fi
     if [ "$OS" = mac ]; then
-        if has_command brew; then
-            step_run "brew install node" brew install node
-        else
-            step_run "install Node LTS from nodejs.org" install_node_mac_pkg
-        fi
+        if has_command brew; then run_quiet "Installing Node.js" brew install node
+        else run_quiet "Installing Node.js" install_node_mac_pkg; fi
     else
         case "$PKG" in
-            apt-get)
-                step_run "NodeSource setup + apt install nodejs" \
-                    install_node_nodesource 'https://deb.nodesource.com/setup_lts.x'
-                ;;
-            dnf|yum)
-                step_run "NodeSource setup + ${PKG} install nodejs" \
-                    install_node_nodesource 'https://rpm.nodesource.com/setup_lts.x'
-                ;;
-            pacman) linux_pkg_install nodejs && linux_pkg_install npm ;;
-            zypper) linux_pkg_install nodejs ;;
-            apk) linux_pkg_install nodejs && linux_pkg_install npm ;;
-            *) err "no package manager for Node"; return 1 ;;
+            apt-get) run_quiet "Installing Node.js" install_node_nodesource 'https://deb.nodesource.com/setup_lts.x' ;;
+            dnf|yum) run_quiet "Installing Node.js" install_node_nodesource 'https://rpm.nodesource.com/setup_lts.x' ;;
+            pacman) run_quiet "Installing Node.js" bash -c 'pkg_install nodejs && pkg_install npm' ;;
+            zypper) run_quiet "Installing Node.js" pkg_install nodejs ;;
+            apk) run_quiet "Installing Node.js" bash -c 'pkg_install nodejs && pkg_install npm' ;;
         esac
     fi
-    if has_command node; then ok "Node installed ($(node --version 2>/dev/null))"; fi
 }
 
 # --------------------------------------------------------------------------
@@ -268,21 +261,16 @@ find_antigravity_cli() {
 install_antigravity_mac_dmg() {
     local arch url dmg vol
     arch="$(uname -m)"
-    case "$arch" in
-        arm64) arch="arm" ;;
-        x86_64) arch="x64" ;;
-    esac
+    case "$arch" in arm64) arch="arm" ;; x86_64) arch="x64" ;; esac
     url="https://storage.googleapis.com/antigravity-public/antigravity-hub/${ANTIGRAVITY_MAC_VER1}-${ANTIGRAVITY_MAC_VER2}/darwin-${arch}/Antigravity.dmg"
     dmg="$(mktemp -d)/Antigravity.dmg"
-    info "downloading Antigravity ($url)"
     curl -fsSL "$url" -o "$dmg"
     vol="$(hdiutil attach "$dmg" -nobrowse -quiet | grep -o '/Volumes/.*' | head -1)"
-    if [ -z "$vol" ]; then err "could not mount Antigravity dmg"; return 1; fi
+    [ -z "$vol" ] && return 1
     cp -R "$vol/Antigravity.app" /Applications/ 2>/dev/null || as_root cp -R "$vol/Antigravity.app" /Applications/
     hdiutil detach "$vol" -quiet || true
 }
 
-# Download and install an Antigravity .deb (apt systems only).
 install_antigravity_deb() {
     local deb
     deb="$(mktemp -d)/antigravity.deb"
@@ -291,157 +279,117 @@ install_antigravity_deb() {
 }
 
 install_antigravity() {
-    step "Antigravity IDE"
     if find_antigravity_cli >/dev/null 2>&1; then
-        if [ "$OS" = mac ] && has_command brew; then
-            step_run "brew upgrade --cask antigravity" brew upgrade --cask antigravity || true
-            ok "Antigravity up to date"
-        else
-            skip "Antigravity already installed"
-        fi
+        [ "$OS" = mac ] && has_command brew && run_quiet "Checking Antigravity" brew upgrade --cask antigravity
         return 0
     fi
-
     if [ "$OS" = mac ]; then
-        if has_command brew; then
-            step_run "brew install --cask antigravity" brew install --cask antigravity
-        else
-            step_run "install Antigravity (dmg)" install_antigravity_mac_dmg
-        fi
+        if has_command brew; then run_quiet "Installing Antigravity" brew install --cask antigravity
+        else run_quiet "Installing Antigravity" install_antigravity_mac_dmg; fi
     else
-        # Linux: prefer a user-provided .deb; otherwise guide (we do not add an
-        # unverified apt repo / signing key automatically).
         if [ -n "$LINUX_ANTIGRAVITY_DEB_URL" ] && [ "$PKG" = "apt-get" ]; then
-            step_run "download + dpkg -i Antigravity .deb" install_antigravity_deb
-        else
-            warn "Linux: automatic Antigravity install is not enabled by default."
-            info "Install it from https://antigravity.google/download/linux (deb / tarball / official apt repo),"
-            info "or set LINUX_ANTIGRAVITY_DEB_URL=<deb url> and re-run. Other components are installed normally."
-            return 0
+            run_quiet "Installing Antigravity" install_antigravity_deb
         fi
+        # Otherwise Antigravity is left for the user to install (see final note).
     fi
-    if find_antigravity_cli >/dev/null 2>&1; then ok "Antigravity installed"; fi
 }
 
 # --------------------------------------------------------------------------
 # Extensions
 # --------------------------------------------------------------------------
-# Antigravity's CLI prints a harmless "antigravityAnalytics ... NOT registered"
-# warning to stderr; its real output goes to stdout. Drop stderr to read the
-# clean list of installed extension ids, lower-cased for comparison.
+# Antigravity's CLI prints a harmless analytics warning to stderr; its real
+# output goes to stdout. Drop stderr to read the clean list of extension ids.
 antigravity_extensions() {
     local cli="$1"
     [ -z "$cli" ] && return 0
     "$cli" --list-extensions 2>/dev/null | tr '[:upper:]' '[:lower:]'
 }
 
-# Install an extension and judge success by the output text (the CLI may exit
-# non-zero on the harmless warning) or by a re-listing afterwards.
-ext_via_cli() {
-    local cli="$1" target="$2" id_lc="$3" out
-    out="$("$cli" --install-extension "$target" --force 2>&1 || true)"
-    [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/   /'
-    printf '%s' "$out" | grep -qiE 'successfully installed|already installed' && return 0
+ext_is_installed() {
+    local cli="$1" id_lc="$2"
     antigravity_extensions "$cli" | grep -qx "$id_lc"
 }
 
-install_extension() {
+install_one_extension() {
     local ext_id="$1" cli="$2" vsix_url="$3" existing="$4" id_lc
     id_lc="$(printf '%s' "$ext_id" | tr '[:upper:]' '[:lower:]')"
-
-    if [ -z "$cli" ]; then dry "install extension $ext_id via Antigravity CLI"; return 0; fi
-    if printf '%s\n' "$existing" | grep -qx "$id_lc"; then skip "$ext_id already installed"; return 0; fi
-    if $DRY_RUN; then dry "install extension $ext_id (open-vsx, VSIX fallback)"; return 0; fi
-
-    if ext_via_cli "$cli" "$ext_id" "$id_lc"; then
-        ok "$ext_id installed"; return 0
-    fi
-    warn "registry install unconfirmed for $ext_id"
-
+    printf '%s\n' "$existing" | grep -qx "$id_lc" && return 0
+    "$cli" --install-extension "$ext_id" --force >/dev/null 2>&1 || true
+    ext_is_installed "$cli" "$id_lc" && return 0
     if [ -n "$vsix_url" ]; then
-        local vsix
-        vsix="$(mktemp -d)/ext.vsix"
-        if curl -fsSL "$vsix_url" -o "$vsix" && ext_via_cli "$cli" "$vsix" "$id_lc"; then
-            ok "$ext_id installed from VSIX"
-        else
-            err "failed to install $ext_id"
-        fi
-    else
-        err "failed to confirm install of $ext_id"
+        local vsix; vsix="$(mktemp -d)/ext.vsix"
+        curl -fsSL "$vsix_url" -o "$vsix" 2>/dev/null && "$cli" --install-extension "$vsix" --force >/dev/null 2>&1 || true
     fi
 }
 
 install_extensions() {
-    step "Antigravity extensions"
-    if $DRY_RUN; then dry "install Claude Code + Claude RTL extensions"; return 0; fi
+    $DRY_RUN && return 0
     local cli existing
     cli="$(find_antigravity_cli 2>/dev/null || true)"
-    if [ -z "$cli" ]; then
-        warn "Antigravity CLI not found; open Antigravity once, then re-run."
-        return 0
-    fi
+    [ -z "$cli" ] && return 0
     existing="$(antigravity_extensions "$cli")"
-    install_extension "$EXT_CLAUDE_CODE" "$cli" "" "$existing"
-    install_extension "$EXT_CLAUDE_RTL" "$cli" "$RTL_VSIX_URL" "$existing"
+    run_quiet "Adding Claude to the editor" install_one_extension "$EXT_CLAUDE_CODE" "$cli" "" "$existing"
+    run_quiet "Adding Hebrew/Arabic support" install_one_extension "$EXT_CLAUDE_RTL" "$cli" "$RTL_VSIX_URL" "$existing"
 }
 
 # --------------------------------------------------------------------------
 # Claude Code CLI
 # --------------------------------------------------------------------------
+claude_install_cmd() { curl -fsSL https://claude.ai/install.sh | bash; }
+
 install_claude_cli() {
-    step "Claude Code CLI"
     if has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; then
-        step_run "claude update" claude update || true
+        run_quiet "Checking Claude" claude update
         persist_path "$CLAUDE_BIN_DIR"
-        ok "Claude CLI up to date"
         return 0
     fi
-    step_run "install Claude Code CLI (claude.ai/install.sh)" bash -c \
-        'curl -fsSL https://claude.ai/install.sh | bash'
-    # Native installer drops claude in ~/.local/bin - guarantee PATH.
+    run_quiet "Installing Claude" claude_install_cmd
     persist_path "$CLAUDE_BIN_DIR"
-    if has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; then ok "Claude CLI installed"; fi
 }
 
 # --------------------------------------------------------------------------
-# Verify
+# Results checklist
 # --------------------------------------------------------------------------
-report_row() { printf '   %-13s %-9s %s\n' "$1" "$2" "${3:-}"; }
-
-verify() {
-    step "Verifying"
-    local missing=0 v cli
-
-    for tool in git node npm claude; do
-        if has_command "$tool"; then
-            v="$("$tool" --version 2>/dev/null | head -1 || true)"
-            report_row "$tool" "OK" "$v"
-        else
-            report_row "$tool" "MISSING" ""
-            missing=$((missing + 1))
-        fi
-    done
-
+show_results() {
+    local ok_git=0 ok_node=0 ok_claude=0 ok_ag=0 ok_ext=0 cli
+    has_command git && ok_git=1
+    has_command node && ok_node=1
+    { has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; } && ok_claude=1
     cli="$(find_antigravity_cli 2>/dev/null || true)"
+    [ -n "$cli" ] && ok_ag=1
     if [ -n "$cli" ]; then
-        report_row "antigravity" "OK" "$cli"
-        local exts hc=no hr=no
-        exts="$(antigravity_extensions "$cli")"
-        if printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_CODE" | tr '[:upper:]' '[:lower:]')"; then hc=yes; fi
-        if printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_RTL" | tr '[:upper:]' '[:lower:]')"; then hr=yes; fi
-        report_row "extensions" "INFO" "claude-code=$hc rtl=$hr"
-    else
-        report_row "antigravity" "MISSING" ""
-        if [ "$OS" = mac ]; then missing=$((missing + 1)); fi
+        local exts; exts="$(antigravity_extensions "$cli")"
+        if printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_CODE" | tr '[:upper:]' '[:lower:]')" \
+            && printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_RTL" | tr '[:upper:]' '[:lower:]')"; then
+            ok_ext=1
+        fi
     fi
 
     echo
-    if [ "$missing" -gt 0 ]; then
-        warn "$missing required component(s) missing - open a NEW terminal (PATH applies to new shells) and re-run."
-        return 1
+    check_row "$ok_git" "Git" "keeps track of your code"
+    check_row "$ok_node" "Node.js" "runs your tools"
+    check_row "$ok_ag" "Antigravity" "your code editor"
+    check_row "$ok_ext" "Claude in editor" "chat with Claude while you build"
+    check_row "$ok_claude" "Claude command" "use Claude from the terminal"
+    rule_line
+
+    if [ "$ok_git" = 1 ] && [ "$ok_node" = 1 ] && [ "$ok_ag" = 1 ] && [ "$ok_ext" = 1 ] && [ "$ok_claude" = 1 ]; then
+        printf '\n  %sYou are all set. Everything is installed and ready to go.%s\n\n' "$C_GREEN" "$C_RESET"
+    else
+        echo
+        if [ "$OS" = linux ] && [ "$ok_ag" = 0 ]; then
+            note "Almost there. On Linux, install the Antigravity editor yourself:"
+            note "  https://antigravity.google/download/linux"
+            note "Then run this command again to add the Claude extensions."
+        else
+            note "Almost there. A few things did not finish installing."
+            note "Please run this command again. If it keeps happening, restart and retry."
+            if [ "$ok_ext" = 0 ] && [ "$ok_ag" = 1 ]; then
+                note "If Antigravity is new, open it once (sign in with Google), then run this again."
+            fi
+        fi
+        echo
     fi
-    ok "all required components present"
-    return 0
 }
 
 # --------------------------------------------------------------------------
@@ -451,21 +399,18 @@ main() {
     detect_os
     [ "$OS" = linux ] && detect_linux_pkg
 
-    printf '%sclaude-dev-setup (%s)%s\n' "$C_RESET" "$OS" "$C_RESET"
-    $DRY_RUN && warn "DRY RUN - nothing will be installed"
+    banner
+    $DRY_RUN && note "DRY RUN - nothing will be installed."
 
-    install_git
-    install_node
-    install_antigravity
-    install_extensions
-    install_claude_cli
+    ensure_sudo
+    install_git || true
+    install_node || true
+    install_antigravity || true
+    install_extensions || true
+    install_claude_cli || true
+    [ -n "$SUDO_KEEPALIVE_PID" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
 
-    echo
-    if verify; then
-        printf '%sDone. Open a NEW terminal and run: claude%s\n' "$C_GREEN" "$C_RESET"
-    else
-        printf '%sFinished with warnings - see above.%s\n' "$C_YELLOW" "$C_RESET"
-    fi
+    show_results
 }
 
 main
