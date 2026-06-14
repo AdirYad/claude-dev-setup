@@ -52,6 +52,24 @@ That is the whole thing. You will see a checklist of green checks when it is don
 
 ---
 
+## Uninstall
+
+Removes the Claude Code CLI and the two Antigravity extensions. It keeps git, Node.js, and Antigravity, since other software may rely on them.
+
+**Windows**
+
+```powershell
+irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/scripts/uninstall.ps1 | iex
+```
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/scripts/uninstall.sh | bash
+```
+
+---
+
 ## License
 
 [MIT](LICENSE) © Adir Yadaev

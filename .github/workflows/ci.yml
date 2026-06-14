@@ -13,8 +13,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: shellcheck + bash -n
         run: |
-          shellcheck -S style scripts/install.sh tests/smoke.sh
+          shellcheck -S style scripts/install.sh scripts/uninstall.sh tests/smoke.sh
           bash -n scripts/install.sh
+          bash -n scripts/uninstall.sh
 
   macos-dryrun:
     name: macos (dry-run)
@@ -37,7 +38,7 @@ jobs:
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
-          $results = Invoke-ScriptAnalyzer -Path .\scripts\install.ps1 -Settings .\.github\linters\PSScriptAnalyzerSettings.psd1
+          $results = Invoke-ScriptAnalyzer -Path .\scripts -Settings .\.github\linters\PSScriptAnalyzerSettings.psd1
           $results | Format-Table -AutoSize
           if ($results | Where-Object Severity -in 'Error','Warning') {
             throw "PSScriptAnalyzer reported errors/warnings"
