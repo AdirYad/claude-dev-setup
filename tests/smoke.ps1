@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$script = Join-Path $root 'install.ps1'
+$script = Join-Path $root 'scripts\install.ps1'
 
 Write-Host '== parse check =='
 $tokens = $null

@@ -16,7 +16,7 @@
     Internal/testing only: print every action without changing the system.
 
 .EXAMPLE
-    irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/scripts/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(

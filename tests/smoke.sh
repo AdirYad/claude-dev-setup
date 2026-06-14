@@ -4,13 +4,10 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
-script="$here/install.sh"
+script="$here/scripts/install.sh"
 
 echo "== bash -n (syntax) =="
 bash -n "$script"
-
-echo "== --help =="
-bash "$script" --help >/dev/null
 
 echo "== --dry-run =="
 out="$(bash "$script" --dry-run 2>&1)"

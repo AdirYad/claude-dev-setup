@@ -15,13 +15,13 @@ It sets up Git, Node.js, the Antigravity editor, the Claude extensions, and the 
 **Windows** (open PowerShell and paste):
 
 ```powershell
-irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/scripts/install.ps1 | iex
 ```
 
 **macOS / Linux** (open Terminal and paste):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/scripts/install.sh | bash
 ```
 
 That is the whole thing. You will see a checklist of green checks when it is done.

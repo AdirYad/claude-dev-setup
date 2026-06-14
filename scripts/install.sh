@@ -9,7 +9,7 @@
 # immediate upgrade is available (brew upgrade / claude update), otherwise it is
 # left alone. PATH is always fixed so the tools work in a fresh terminal.
 #
-#   curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/scripts/install.sh | bash
 #
 set -euo pipefail
 
