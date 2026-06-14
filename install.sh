@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 #
-# claude-dev-setup — macOS + Linux
+# claude-dev-setup - macOS + Linux
 #
-# Installs (idempotently): git, Node.js LTS, Antigravity IDE, the Claude Code
-# and Claude RTL Code extensions for Antigravity, and the Claude Code CLI.
-# Already-installed components are skipped unless --upgrade is given.
+# Installs git, Node.js LTS, Antigravity IDE, the Claude Code and Claude RTL
+# Code extensions for Antigravity, and the Claude Code CLI.
+#
+# Re-running is safe: anything already installed is upgraded in place when an
+# immediate upgrade is available (brew upgrade / claude update), otherwise it is
+# left alone. PATH is always fixed so the tools work in a fresh terminal.
 #
 #   curl -fsSL https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.sh | bash
 #
 set -euo pipefail
+
+# Keep apt/dpkg from launching interactive prompts (e.g. tzdata) that would read
+# the script's stdin - important when run via `curl ... | bash`. Harmless on macOS.
+export DEBIAN_FRONTEND=noninteractive
 
 # --------------------------------------------------------------------------
 # Constants
@@ -27,42 +34,13 @@ ANTIGRAVITY_MAC_VER2="6481382726303744"
 LINUX_ANTIGRAVITY_DEB_URL="${LINUX_ANTIGRAVITY_DEB_URL:-}"
 
 # --------------------------------------------------------------------------
-# Flags
+# Flags (internal/testing only: --dry-run. Users never need a flag.)
 # --------------------------------------------------------------------------
 DRY_RUN=false
-UPGRADE=false
-VERIFY_ONLY=false
-API_KEY=""
-SKIP=""
-
-usage() {
-    cat <<'EOF'
-claude-dev-setup (macOS + Linux)
-
-Usage:
-  install.sh [--dry-run] [--upgrade] [--skip git,node,...] [--verify] [--api-key KEY] [--help]
-
-Flags:
-  --dry-run     Print actions, change nothing.
-  --upgrade     Upgrade components already installed.
-  --skip        Comma list: git,node,antigravity,extensions,claude.
-  --verify      Run only the verification step.
-  --api-key     Persist an Anthropic API key to your shell profile.
-  --help        This help.
-EOF
-}
-
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=true ;;
-        --upgrade) UPGRADE=true ;;
-        --verify) VERIFY_ONLY=true ;;
-        --skip) SKIP="${2:-}"; shift ;;
-        --skip=*) SKIP="${1#*=}" ;;
-        --api-key) API_KEY="${2:-}"; shift ;;
-        --api-key=*) API_KEY="${1#*=}" ;;
-        --help|-h) usage; exit 0 ;;
-        *) echo "unknown flag: $1" >&2; usage; exit 2 ;;
+        *) ;;
     esac
     shift
 done
@@ -90,11 +68,17 @@ info() { printf '   %s\n' "$1"; }
 # --------------------------------------------------------------------------
 has_command() { command -v "$1" >/dev/null 2>&1; }
 
-should_skip() {
-    case ",$SKIP," in
-        *",$1,"*) return 0 ;;
-        *) return 1 ;;
-    esac
+# Run a command with root privileges: directly when already root (e.g. inside a
+# container), via sudo otherwise. Fails clearly when neither is possible.
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif has_command sudo; then
+        sudo "$@"
+    else
+        err "this step needs root (install sudo or run as root): $*"
+        return 1
+    fi
 }
 
 # step_run "description" cmd args...   (respects --dry-run)
@@ -160,12 +144,12 @@ persist_path() {
 linux_pkg_install() {
     local pkg="$1"
     case "$PKG" in
-        apt-get) step_run "apt-get install $pkg" sudo apt-get install -y "$pkg" ;;
-        dnf) step_run "dnf install $pkg" sudo dnf install -y "$pkg" ;;
-        yum) step_run "yum install $pkg" sudo yum install -y "$pkg" ;;
-        pacman) step_run "pacman -S $pkg" sudo pacman -S --needed --noconfirm "$pkg" ;;
-        zypper) step_run "zypper install $pkg" sudo zypper install -y "$pkg" ;;
-        apk) step_run "apk add $pkg" sudo apk add "$pkg" ;;
+        apt-get) step_run "apt-get install $pkg" as_root apt-get install -y "$pkg" ;;
+        dnf) step_run "dnf install $pkg" as_root dnf install -y "$pkg" ;;
+        yum) step_run "yum install $pkg" as_root yum install -y "$pkg" ;;
+        pacman) step_run "pacman -S $pkg" as_root pacman -S --needed --noconfirm "$pkg" ;;
+        zypper) step_run "zypper install $pkg" as_root zypper install -y "$pkg" ;;
+        apk) step_run "apk add $pkg" as_root apk add "$pkg" ;;
         *) err "no supported package manager found for $pkg"; return 1 ;;
     esac
 }
@@ -174,11 +158,11 @@ linux_pkg_install() {
 # git
 # --------------------------------------------------------------------------
 install_git() {
-    should_skip git && { skip "git (skipped)"; return 0; }
     step "git"
     if has_command git; then
-        if $UPGRADE && [ "$OS" = mac ] && has_command brew; then
+        if [ "$OS" = mac ] && has_command brew; then
             step_run "brew upgrade git" brew upgrade git || true
+            ok "git up to date"
         else
             skip "git already installed ($(git --version 2>/dev/null))"
         fi
@@ -190,7 +174,7 @@ install_git() {
         else
             warn "git missing and no Homebrew; triggering Xcode Command Line Tools"
             step_run "xcode-select --install" xcode-select --install || true
-            info "finish the Xcode CLT prompt, then re-run with --skip node,antigravity,extensions,claude"
+            info "finish the Xcode CLT prompt, then re-run"
         fi
     else
         linux_pkg_install git
@@ -215,15 +199,25 @@ install_node_mac_pkg() {
     arch="$(uname -m)"
     info "downloading Node ${ver} (${arch}) official pkg"
     curl -fsSL "https://nodejs.org/dist/${ver}/node-${ver}.pkg" -o "$pkg"
-    sudo installer -pkg "$pkg" -target /
+    as_root installer -pkg "$pkg" -target /
+}
+
+# NodeSource setup script (run as root), then install nodejs. Avoids piping
+# curl straight into sudo so it works as root (no sudo) and as a normal user.
+install_node_nodesource() {
+    local setup_url="$1" setup
+    setup="$(mktemp -d)/nodesource_setup.sh"
+    curl -fsSL "$setup_url" -o "$setup"
+    as_root bash "$setup"
+    as_root "$PKG" install -y nodejs
 }
 
 install_node() {
-    should_skip node && { skip "node (skipped)"; return 0; }
     step "Node.js LTS"
     if has_command node; then
-        if $UPGRADE && [ "$OS" = mac ] && has_command brew; then
+        if [ "$OS" = mac ] && has_command brew; then
             step_run "brew upgrade node" brew upgrade node || true
+            ok "Node up to date"
         else
             skip "Node already installed ($(node --version 2>/dev/null))"
         fi
@@ -238,12 +232,12 @@ install_node() {
     else
         case "$PKG" in
             apt-get)
-                step_run "NodeSource setup + apt install nodejs" bash -c \
-                    'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs'
+                step_run "NodeSource setup + apt install nodejs" \
+                    install_node_nodesource 'https://deb.nodesource.com/setup_lts.x'
                 ;;
             dnf|yum)
-                step_run "NodeSource setup + ${PKG} install nodejs" bash -c \
-                    "curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash - && sudo $PKG install -y nodejs"
+                step_run "NodeSource setup + ${PKG} install nodejs" \
+                    install_node_nodesource 'https://rpm.nodesource.com/setup_lts.x'
                 ;;
             pacman) linux_pkg_install nodejs && linux_pkg_install npm ;;
             zypper) linux_pkg_install nodejs ;;
@@ -284,16 +278,24 @@ install_antigravity_mac_dmg() {
     curl -fsSL "$url" -o "$dmg"
     vol="$(hdiutil attach "$dmg" -nobrowse -quiet | grep -o '/Volumes/.*' | head -1)"
     if [ -z "$vol" ]; then err "could not mount Antigravity dmg"; return 1; fi
-    cp -R "$vol/Antigravity.app" /Applications/ 2>/dev/null || sudo cp -R "$vol/Antigravity.app" /Applications/
+    cp -R "$vol/Antigravity.app" /Applications/ 2>/dev/null || as_root cp -R "$vol/Antigravity.app" /Applications/
     hdiutil detach "$vol" -quiet || true
 }
 
+# Download and install an Antigravity .deb (apt systems only).
+install_antigravity_deb() {
+    local deb
+    deb="$(mktemp -d)/antigravity.deb"
+    curl -fsSL "$LINUX_ANTIGRAVITY_DEB_URL" -o "$deb"
+    as_root dpkg -i "$deb" || as_root apt-get install -f -y
+}
+
 install_antigravity() {
-    should_skip antigravity && { skip "Antigravity (skipped)"; return 0; }
     step "Antigravity IDE"
     if find_antigravity_cli >/dev/null 2>&1; then
-        if $UPGRADE && [ "$OS" = mac ] && has_command brew; then
+        if [ "$OS" = mac ] && has_command brew; then
             step_run "brew upgrade --cask antigravity" brew upgrade --cask antigravity || true
+            ok "Antigravity up to date"
         else
             skip "Antigravity already installed"
         fi
@@ -310,10 +312,7 @@ install_antigravity() {
         # Linux: prefer a user-provided .deb; otherwise guide (we do not add an
         # unverified apt repo / signing key automatically).
         if [ -n "$LINUX_ANTIGRAVITY_DEB_URL" ] && [ "$PKG" = "apt-get" ]; then
-            local deb
-            deb="$(mktemp -d)/antigravity.deb"
-            step_run "download + dpkg -i Antigravity .deb" bash -c \
-                "curl -fsSL '$LINUX_ANTIGRAVITY_DEB_URL' -o '$deb' && sudo dpkg -i '$deb' || sudo apt-get install -f -y"
+            step_run "download + dpkg -i Antigravity .deb" install_antigravity_deb
         else
             warn "Linux: automatic Antigravity install is not enabled by default."
             info "Install it from https://antigravity.google/download/linux (deb / tarball / official apt repo),"
@@ -330,8 +329,8 @@ install_antigravity() {
 # Antigravity's CLI prints a harmless "antigravityAnalytics ... NOT registered"
 # warning and may exit non-zero even when the extension installs fine, so judge
 # success by the output text, not the exit code. --install-extension is itself
-# idempotent (no-op when already current); its --list-extensions is unreliable,
-# so there is no separate "already installed" pre-check.
+# idempotent (installs or upgrades to latest); its --list-extensions is
+# unreliable, so there is no separate "already installed" pre-check.
 ext_via_cli() {
     local cli="$1" target="$2" out
     out="$("$cli" --install-extension "$target" --force 2>&1 || true)"
@@ -364,12 +363,11 @@ install_extension() {
 }
 
 install_extensions() {
-    should_skip extensions && { skip "extensions (skipped)"; return 0; }
     step "Antigravity extensions"
     local cli=""
     cli="$(find_antigravity_cli 2>/dev/null || true)"
     if [ -z "$cli" ] && ! $DRY_RUN; then
-        warn "Antigravity CLI not found; open Antigravity once, then re-run with --skip git,node,antigravity,claude"
+        warn "Antigravity CLI not found; open Antigravity once, then re-run."
         return 0
     fi
     install_extension "$EXT_CLAUDE_CODE" "$cli" ""
@@ -380,45 +378,18 @@ install_extensions() {
 # Claude Code CLI
 # --------------------------------------------------------------------------
 install_claude_cli() {
-    should_skip claude && { skip "Claude CLI (skipped)"; return 0; }
     step "Claude Code CLI"
     if has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; then
-        if $UPGRADE; then
-            step_run "claude update" claude update || true
-        else
-            skip "Claude CLI already installed"
-        fi
+        step_run "claude update" claude update || true
         persist_path "$CLAUDE_BIN_DIR"
+        ok "Claude CLI up to date"
         return 0
     fi
     step_run "install Claude Code CLI (claude.ai/install.sh)" bash -c \
         'curl -fsSL https://claude.ai/install.sh | bash'
-    # Native installer drops claude in ~/.local/bin — guarantee PATH.
+    # Native installer drops claude in ~/.local/bin - guarantee PATH.
     persist_path "$CLAUDE_BIN_DIR"
     if has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; then ok "Claude CLI installed"; fi
-}
-
-# --------------------------------------------------------------------------
-# Optional API key
-# --------------------------------------------------------------------------
-set_api_key() {
-    local key="${API_KEY:-${ANTHROPIC_API_KEY:-}}"
-    [ -z "$key" ] && return 0
-    step "Anthropic API key"
-    local rc="$HOME/.profile"
-    case "${SHELL:-}" in
-        *zsh) rc="$HOME/.zshrc" ;;
-        *bash) rc="$HOME/.bashrc" ;;
-    esac
-    if grep -q 'ANTHROPIC_API_KEY' "$rc" 2>/dev/null; then
-        skip "ANTHROPIC_API_KEY already in $(basename "$rc")"
-    elif $DRY_RUN; then
-        dry "persist ANTHROPIC_API_KEY to $(basename "$rc")"
-    else
-        printf '\n# claude-dev-setup\nexport ANTHROPIC_API_KEY="%s"\n' "$key" >> "$rc"
-        export ANTHROPIC_API_KEY="$key"
-        ok "ANTHROPIC_API_KEY set in $(basename "$rc")"
-    fi
 }
 
 # --------------------------------------------------------------------------
@@ -453,7 +424,7 @@ verify() {
 
     echo
     if [ "$missing" -gt 0 ]; then
-        warn "$missing required component(s) missing — open a NEW terminal (PATH applies to new shells) and re-run with --verify."
+        warn "$missing required component(s) missing - open a NEW terminal (PATH applies to new shells) and re-run."
         return 1
     fi
     ok "all required components present"
@@ -470,14 +441,11 @@ main() {
     printf '%sclaude-dev-setup (%s)%s\n' "$C_RESET" "$OS" "$C_RESET"
     $DRY_RUN && warn "DRY RUN - nothing will be installed"
 
-    if $VERIFY_ONLY; then verify || exit 1; exit 0; fi
-
     install_git
     install_node
     install_antigravity
     install_extensions
     install_claude_cli
-    set_api_key
 
     echo
     if verify; then

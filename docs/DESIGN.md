@@ -15,7 +15,8 @@ One command sets up a complete Claude Code development environment on **Windows,
 
 ## Principles
 
-- **Idempotent / install-once.** Every component checks if it is already present *first*. If installed → **skip** (no reinstall). Upgrades happen **only** with the explicit `--upgrade` flag.
+- **No flags.** The script takes no user-facing options — you just run it. (An internal `--dry-run` exists solely so CI can exercise the logic without installing; users never use it.)
+- **Idempotent install-or-upgrade.** Every component checks if it is already present *first*. Missing → install. Already present **and** an immediate upgrade command exists (winget upgrade / brew upgrade / `claude update`) → upgrade in place. Already present with no clean immediate upgrade (macOS-without-brew `.pkg`/`.dmg`, Linux system packages) → skip and let the normal system updater handle it.
 - **No Homebrew auto-install.** On macOS we use Homebrew *only if the user already has it* (fast path). Otherwise we use official direct downloads. We never install Homebrew for the user.
 - **Self-contained scripts.** `install.ps1` and `install.sh` have no runtime file dependencies, so the `curl | bash` / `irm | iex` one-liners work with zero setup (same model as rustup/homebrew).
 - **PATH is guaranteed.** Each tool's bin directory is added to PATH **persistently and for the current session**, so `claude`, `node`, `git`, and `antigravity` work in a fresh terminal — not just the one that ran the installer.
@@ -50,21 +51,11 @@ One command sets up a complete Claude Code development environment on **Windows,
 
 ## Environment / secrets
 
-- Claude Code authenticates by interactive login (Pro/Max/Team/Console). **No API key required by default.**
-- Optional: if `--api-key <key>` is passed (or `ANTHROPIC_API_KEY` is already set), the installer persists it to the user environment. Otherwise this step is skipped.
+- Claude Code authenticates by interactive login (Pro/Max/Team/Console). **No API key required**, so the installer does not handle keys.
 
 ## Flags
 
-| Flag | Effect |
-|------|--------|
-| `--dry-run` | print every action, install nothing |
-| `--upgrade` | upgrade components that are already installed |
-| `--skip a,b` | skip named components (`git,node,antigravity,extensions,claude`) |
-| `--verify` | run only the doctor / verification step |
-| `--api-key <k>` | persist an Anthropic API key to the environment |
-| `--help` | usage |
-
-(PowerShell uses `-DryRun`, `-Upgrade`, `-Skip`, `-Verify`, `-ApiKey`, `-Help`.)
+The script takes **no user-facing flags**. The only flag is `--dry-run` (`-DryRun` on Windows), which is internal: it prints every action without changing the system and exists solely so CI and the smoke tests can run without installing software.
 
 ## Verification strategy
 

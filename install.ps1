@@ -3,37 +3,24 @@
     One-command Claude Code dev environment for Windows.
 
 .DESCRIPTION
-    Installs (idempotently): git, Node.js LTS, Antigravity IDE, the Claude Code
-    and Claude RTL Code extensions for Antigravity, and the Claude Code CLI.
-    Already-installed components are skipped unless -Upgrade is given.
+    Installs git, Node.js LTS, Antigravity IDE, the Claude Code and Claude RTL
+    Code extensions for Antigravity, and the Claude Code CLI.
+
+    Re-running is safe: anything already installed is upgraded in place when an
+    immediate upgrade is available (winget upgrade / claude update), otherwise
+    it is left alone. PATH and the PowerShell ExecutionPolicy are always fixed
+    so the tools work in a fresh terminal.
 
 .PARAMETER DryRun
-    Print every action without changing the system.
-.PARAMETER Upgrade
-    Upgrade components that are already installed (otherwise present == skip).
-.PARAMETER Skip
-    Components to skip: git, node, antigravity, extensions, claude.
-.PARAMETER Verify
-    Run only the verification/doctor step.
-.PARAMETER ApiKey
-    Persist an Anthropic API key to the user environment (optional).
-.PARAMETER Help
-    Show usage and exit.
+    Internal/testing only: print every action without changing the system.
+    Used by CI; users never need it.
 
 .EXAMPLE
     irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1 | iex
-
-.EXAMPLE
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/AdirYad/claude-dev-setup/main/install.ps1))) -DryRun
 #>
 [CmdletBinding()]
 param(
-    [switch] $DryRun,
-    [switch] $Upgrade,
-    [string[]] $Skip = @(),
-    [switch] $Verify,
-    [string] $ApiKey,
-    [switch] $Help
+    [switch] $DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,48 +52,12 @@ function Write-Warn { param([string] $Message) Write-Host "   [warn] $Message" -
 function Write-Err  { param([string] $Message) Write-Host "   [err]  $Message" -ForegroundColor Red }
 function Write-Dry  { param([string] $Message) Write-Host "   [dry]  would $Message" -ForegroundColor Magenta }
 
-function Show-Usage {
-    @'
-claude-dev-setup (Windows)
-
-Usage:
-  install.ps1 [-DryRun] [-Upgrade] [-Skip git,node,...] [-Verify] [-ApiKey <key>] [-Help]
-
-Flags:
-  -DryRun     Print actions, change nothing.
-  -Upgrade    Upgrade components already installed.
-  -Skip       Comma list: git,node,antigravity,extensions,claude.
-  -Verify     Run only the verification step.
-  -ApiKey     Persist an Anthropic API key to the user environment.
-  -Help       This help.
-'@ | Write-Host
-}
-
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
 function Test-CommandExists {
     param([string] $Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
-}
-
-function Test-ShouldSkip {
-    param([string] $Component)
-    return ($Skip -contains $Component)
-}
-
-# Run an action unless in dry-run mode.
-function Invoke-Action {
-    param(
-        [string] $Description,
-        [scriptblock] $Action
-    )
-    if ($DryRun) {
-        Write-Dry $Description
-        return $true
-    }
-    & $Action
-    return $true
 }
 
 # Re-read PATH from machine + user scope into the current session.
@@ -129,15 +80,13 @@ function Add-ToUserPath {
     if ($already) {
         Write-Skip "PATH already contains $Directory"
     }
+    elseif ($DryRun) {
+        Write-Dry "add $Directory to User PATH"
+    }
     else {
-        if ($DryRun) {
-            Write-Dry "add $Directory to User PATH"
-        }
-        else {
-            $newPath = (@($parts + $Directory) | Where-Object { $_ }) -join ';'
-            [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-            Write-Ok "added $Directory to User PATH"
-        }
+        $newPath = (@($parts + $Directory) | Where-Object { $_ }) -join ';'
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+        Write-Ok "added $Directory to User PATH"
     }
 
     # Make it usable immediately in this session too.
@@ -152,7 +101,7 @@ function Test-Winget {
     return $false
 }
 
-# winget install/upgrade with sane non-interactive flags.
+# winget install/upgrade with non-interactive flags. Returns $true.
 function Invoke-Winget {
     param(
         [string] $Id,
@@ -173,10 +122,13 @@ function Set-ExecutionPolicyIfRestricted {
     $current = Get-ExecutionPolicy -Scope CurrentUser
     $restrictive = @('Restricted', 'AllSigned', 'Undefined')
     if ($restrictive -contains [string]$current) {
-        Invoke-Action "set CurrentUser ExecutionPolicy to RemoteSigned (was $current)" {
+        if ($DryRun) {
+            Write-Dry "set CurrentUser ExecutionPolicy to RemoteSigned (was $current)"
+        }
+        else {
             Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-        } | Out-Null
-        if (-not $DryRun) { Write-Ok 'ExecutionPolicy = RemoteSigned (CurrentUser)' }
+            Write-Ok 'ExecutionPolicy = RemoteSigned (CurrentUser)'
+        }
     }
     else {
         Write-Skip "ExecutionPolicy already permissive ($current)"
@@ -184,14 +136,13 @@ function Set-ExecutionPolicyIfRestricted {
 }
 
 # ----------------------------------------------------------------------------
-# Components
+# Components (install when missing; upgrade in place when already present)
 # ----------------------------------------------------------------------------
 function Install-Git {
-    if (Test-ShouldSkip 'git') { Write-Skip 'git (skipped)'; return }
     Write-Step 'git'
     if (Test-CommandExists 'git') {
-        if ($Upgrade) { Invoke-Winget -Id 'Git.Git' -DoUpgrade | Out-Null; Write-Ok 'git upgraded' }
-        else { Write-Skip "git already installed ($(git --version))" }
+        Invoke-Winget -Id 'Git.Git' -DoUpgrade | Out-Null
+        if (-not $DryRun) { Write-Ok "git up to date ($(git --version))" }
         return
     }
     if (-not (Test-Winget)) { return }
@@ -201,11 +152,10 @@ function Install-Git {
 }
 
 function Install-Node {
-    if (Test-ShouldSkip 'node') { Write-Skip 'node (skipped)'; return }
     Write-Step 'Node.js LTS'
     if (Test-CommandExists 'node') {
-        if ($Upgrade) { Invoke-Winget -Id 'OpenJS.NodeJS.LTS' -DoUpgrade | Out-Null; Write-Ok 'Node upgraded' }
-        else { Write-Skip "Node already installed ($(node --version))" }
+        Invoke-Winget -Id 'OpenJS.NodeJS.LTS' -DoUpgrade | Out-Null
+        if (-not $DryRun) { Write-Ok "Node up to date ($(node --version))" }
         return
     }
     if (-not (Test-Winget)) { return }
@@ -230,12 +180,10 @@ function Find-AntigravityCli {
 }
 
 function Install-Antigravity {
-    if (Test-ShouldSkip 'antigravity') { Write-Skip 'Antigravity (skipped)'; return }
     Write-Step 'Antigravity IDE'
-    $cli = Find-AntigravityCli
-    if ($cli) {
-        if ($Upgrade) { Invoke-Winget -Id 'Google.Antigravity' -DoUpgrade | Out-Null; Write-Ok 'Antigravity upgraded' }
-        else { Write-Skip 'Antigravity already installed' }
+    if (Find-AntigravityCli) {
+        Invoke-Winget -Id 'Google.Antigravity' -DoUpgrade | Out-Null
+        if (-not $DryRun) { Write-Ok 'Antigravity up to date' }
         return
     }
     if (-not (Test-Winget)) { return }
@@ -247,8 +195,8 @@ function Install-Antigravity {
 # Antigravity's CLI prints a harmless "antigravityAnalytics ... NOT registered"
 # warning and may exit non-zero even when the extension installs fine, so we
 # judge success by the output text, not the exit code. --install-extension is
-# itself idempotent (no-op when already current), which is why there is no
-# separate "already installed" pre-check (its --list-extensions is unreliable).
+# itself idempotent (installs or upgrades to the latest), which is why there is
+# no separate "already installed" check (its --list-extensions is unreliable).
 function Install-ExtViaCli {
     param([string] $Cli, [string] $Target)
     $output = (& $Cli --install-extension $Target --force 2>&1 | Out-String)
@@ -285,11 +233,10 @@ function Install-AntigravityExtension {
 }
 
 function Install-Extensions {
-    if (Test-ShouldSkip 'extensions') { Write-Skip 'extensions (skipped)'; return }
     Write-Step 'Antigravity extensions'
     $cli = Find-AntigravityCli
     if (-not $cli -and -not $DryRun) {
-        Write-Warn 'Antigravity CLI not found; open Antigravity once, then re-run with -Skip git,node,antigravity,claude'
+        Write-Warn 'Antigravity CLI not found; open Antigravity once, then re-run.'
         return
     }
     Install-AntigravityExtension -ExtId $script:ExtClaudeCode -Cli $cli -VsixUrl $null
@@ -297,36 +244,24 @@ function Install-Extensions {
 }
 
 function Install-ClaudeCli {
-    if (Test-ShouldSkip 'claude') { Write-Skip 'Claude CLI (skipped)'; return }
     Write-Step 'Claude Code CLI'
     $claudeExe = Join-Path $script:ClaudeBinDir 'claude.exe'
     if ((Test-CommandExists 'claude') -or (Test-Path $claudeExe)) {
-        if ($Upgrade) {
-            Invoke-Action 'claude update' { & claude update | Out-Host } | Out-Null
-            if (-not $DryRun) { Write-Ok 'Claude CLI updated' }
-        }
-        else { Write-Skip 'Claude CLI already installed' }
+        if ($DryRun) { Write-Dry 'claude update' }
+        else { & claude update | Out-Host; Write-Ok 'Claude CLI up to date' }
         Add-ToUserPath $script:ClaudeBinDir
         return
     }
-    Invoke-Action 'install Claude Code CLI (claude.ai/install.ps1)' {
+    if ($DryRun) {
+        Write-Dry 'install Claude Code CLI (claude.ai/install.ps1)'
+    }
+    else {
         $installer = Invoke-RestMethod -Uri 'https://claude.ai/install.ps1'
         & ([scriptblock]::Create($installer))
-    } | Out-Null
+    }
     # The native installer drops claude in %USERPROFILE%\.local\bin - guarantee PATH.
     Add-ToUserPath $script:ClaudeBinDir
     if (-not $DryRun) { Write-Ok 'Claude CLI installed' }
-}
-
-function Set-ApiKeyIfProvided {
-    $key = $ApiKey
-    if (-not $key) { $key = $env:ANTHROPIC_API_KEY }
-    if (-not $key) { return }
-    Write-Step 'Anthropic API key'
-    if ($DryRun) { Write-Dry 'persist ANTHROPIC_API_KEY to User environment'; return }
-    [Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', $key, 'User')
-    $env:ANTHROPIC_API_KEY = $key
-    Write-Ok 'ANTHROPIC_API_KEY set (User)'
 }
 
 # ----------------------------------------------------------------------------
@@ -368,7 +303,7 @@ function Invoke-Verify {
     $missing = $rows | Where-Object { $_.Status -eq 'MISSING' }
     if ($missing) {
         Write-Warn ("missing: " + ($missing.Tool -join ', '))
-        Write-Warn 'Open a NEW terminal (PATH changes apply to new shells). If Antigravity/extensions are missing, open Antigravity once then re-run with -Verify.'
+        Write-Warn 'Open a NEW terminal (PATH changes apply to new shells). If Antigravity/extensions are missing, open Antigravity once then re-run.'
         return $false
     }
     Write-Ok 'all components present'
@@ -379,8 +314,6 @@ function Invoke-Verify {
 # Main
 # ----------------------------------------------------------------------------
 function Main {
-    if ($Help) { Show-Usage; return }
-
     if ($PSVersionTable.PSVersion.Major -lt 5) {
         Write-Err "PowerShell 5.1+ required (found $($PSVersionTable.PSVersion))."
         return
@@ -389,15 +322,12 @@ function Main {
     Write-Host 'claude-dev-setup (Windows)' -ForegroundColor White
     if ($DryRun) { Write-Warn 'DRY RUN - nothing will be installed' }
 
-    if ($Verify) { [void](Invoke-Verify); return }
-
     Set-ExecutionPolicyIfRestricted
     Install-Git
     Install-Node
     Install-Antigravity
     Install-Extensions
     Install-ClaudeCli
-    Set-ApiKeyIfProvided
 
     $ok = Invoke-Verify
     Write-Host ''
@@ -405,7 +335,7 @@ function Main {
         Write-Host 'Done. Open a NEW terminal and run: claude' -ForegroundColor Green
     }
     else {
-        Write-Host 'Finished with warnings - see above. Open a new terminal and re-run with -Verify.' -ForegroundColor Yellow
+        Write-Host 'Finished with warnings - see above. Open a new terminal to pick up PATH changes.' -ForegroundColor Yellow
     }
 }
 
