@@ -1,10 +1,7 @@
-# Keep shell scripts LF so bash/shellcheck work on every platform.
-*.sh        text eol=lf
-install.sh  text eol=lf
-
-# PowerShell is happiest with CRLF on Windows.
-*.ps1       text eol=crlf
-*.psd1      text eol=crlf
-
-# Everything else: normalize to LF in the repo.
+# Normalize all text files to LF in the repo and on checkout. LF works for
+# PowerShell 5.1+, bash, and shellcheck alike, so we keep a single line ending
+# everywhere and avoid CRLF/LF churn across platforms.
 *           text=auto eol=lf
+
+# Be explicit that shell scripts must always be LF (bash/shellcheck break on CRLF).
+*.sh        text eol=lf
