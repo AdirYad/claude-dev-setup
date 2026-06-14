@@ -77,10 +77,10 @@ function Write-Note { param([string] $Message) Write-Host "  $Message" -Foregrou
 
 # ----------------------------------------------------------------------------
 # Run an external program, capturing its output to files so it can neither spam
-# the console nor turn its stderr into a crash. Shows a growing-dots progress
-# line ("Checking Git....") so there is always visible activity - this works
-# even under `irm | iex`, where the console reports as redirected and an
-# in-place spinner would be invisible.
+# the console nor turn its stderr into a crash. Shows an animated spinner that
+# overwrites itself in place ("/ Checking Git") and clears the line when done.
+# We do NOT gate on [Console]::IsOutputRedirected (it is True under `irm | iex`
+# yet the console still handles the carriage return just fine).
 # ----------------------------------------------------------------------------
 function Invoke-Capture {
     param(
@@ -94,13 +94,17 @@ function Invoke-Capture {
     try {
         $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-        if (-not $Quiet) { Write-Host ("  {0}" -f $Label) -NoNewline -ForegroundColor Cyan }
+        $frames = '|', '/', '-', '\'
+        $i = 0
         while (-not $p.HasExited) {
-            if (-not $Quiet) { Write-Host '.' -NoNewline -ForegroundColor Cyan }
-            Start-Sleep -Milliseconds 500
+            if (-not $Quiet) {
+                Write-Host ("`r  {0}  {1}   " -f $frames[$i % 4], $Label) -NoNewline -ForegroundColor Cyan
+                $i++
+            }
+            Start-Sleep -Milliseconds 120
         }
         $p.WaitForExit()
-        if (-not $Quiet) { Write-Host '' }
+        if (-not $Quiet) { Write-Host ("`r" + (' ' * ($Label.Length + 10)) + "`r") -NoNewline }
         $so = if (Test-Path $outFile) { [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         $se = if (Test-Path $errFile) { [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         return [pscustomobject]@{ StdOut = $so; StdErr = $se }
