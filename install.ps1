@@ -272,23 +272,26 @@ function Show-Results {
 
     $cli = Find-AntigravityCli
     $okAg = [bool]$cli
-    $okExt = $false
+    $okExtCode = $false
+    $okExtRtl = $false
     if ($cli) {
         $exts = Get-AntigravityExtensions -Cli $cli
-        $okExt = ($exts -contains $script:ExtClaudeCode.ToLower()) -and ($exts -contains $script:ExtClaudeRtl.ToLower())
+        $okExtCode = $exts -contains $script:ExtClaudeCode.ToLower()
+        $okExtRtl  = $exts -contains $script:ExtClaudeRtl.ToLower()
     }
 
     Write-Host ''
-    Write-Check 'Git'                'keeps track of your code'         $okGit
-    Write-Check 'Node.js'           'runs your tools'                  $okNode
-    Write-Check 'Antigravity'       'your code editor'                 $okAg
-    Write-Check 'Claude in editor'  'chat with Claude while you build' $okExt
-    Write-Check 'Claude command'    'use Claude from the terminal'     $okClaude
+    Write-Check 'Git'                'keeps track of your code'          $okGit
+    Write-Check 'Node.js'           'runs your tools'                   $okNode
+    Write-Check 'Antigravity'       'your code editor'                  $okAg
+    Write-Check 'Claude in editor'  'chat with Claude while you build'  $okExtCode
+    Write-Check 'Hebrew support'    'right-to-left text in the editor'  $okExtRtl
+    Write-Check 'Claude command'    'use Claude from the terminal'      $okClaude
 
     $rule = ([char]0x2500).ToString() * 52
     Write-Host "  $rule" -ForegroundColor DarkGray
 
-    $allOk = $okGit -and $okNode -and $okAg -and $okExt -and $okClaude
+    $allOk = $okGit -and $okNode -and $okAg -and $okExtCode -and $okExtRtl -and $okClaude
     if ($allOk) {
         Write-Host ''
         Write-Host '  You are all set. Everything is installed and ready to go.' -ForegroundColor Green
@@ -298,7 +301,7 @@ function Show-Results {
         Write-Host ''
         Write-Note 'Almost there. A few things did not finish installing.'
         Write-Note 'Please run this command again. If it keeps happening, restart your computer and retry.'
-        if (-not $okAg -or -not $okExt) {
+        if (-not $okAg -or -not $okExtCode -or -not $okExtRtl) {
             Write-Note 'If Antigravity is new, open it once (you will sign in with Google), then run this again.'
         }
         Write-Host ''

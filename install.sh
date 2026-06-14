@@ -351,7 +351,7 @@ install_claude_cli() {
 # Results checklist
 # --------------------------------------------------------------------------
 show_results() {
-    local ok_git=0 ok_node=0 ok_claude=0 ok_ag=0 ok_ext=0 cli
+    local ok_git=0 ok_node=0 ok_claude=0 ok_ag=0 ok_code=0 ok_rtl=0 cli
     has_command git && ok_git=1
     has_command node && ok_node=1
     { has_command claude || [ -x "$CLAUDE_BIN_DIR/claude" ]; } && ok_claude=1
@@ -359,21 +359,20 @@ show_results() {
     [ -n "$cli" ] && ok_ag=1
     if [ -n "$cli" ]; then
         local exts; exts="$(antigravity_extensions "$cli")"
-        if printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_CODE" | tr '[:upper:]' '[:lower:]')" \
-            && printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_RTL" | tr '[:upper:]' '[:lower:]')"; then
-            ok_ext=1
-        fi
+        printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_CODE" | tr '[:upper:]' '[:lower:]')" && ok_code=1
+        printf '%s\n' "$exts" | grep -qx "$(printf '%s' "$EXT_CLAUDE_RTL" | tr '[:upper:]' '[:lower:]')" && ok_rtl=1
     fi
 
     echo
     check_row "$ok_git" "Git" "keeps track of your code"
     check_row "$ok_node" "Node.js" "runs your tools"
     check_row "$ok_ag" "Antigravity" "your code editor"
-    check_row "$ok_ext" "Claude in editor" "chat with Claude while you build"
+    check_row "$ok_code" "Claude in editor" "chat with Claude while you build"
+    check_row "$ok_rtl" "Hebrew support" "right-to-left text in the editor"
     check_row "$ok_claude" "Claude command" "use Claude from the terminal"
     rule_line
 
-    if [ "$ok_git" = 1 ] && [ "$ok_node" = 1 ] && [ "$ok_ag" = 1 ] && [ "$ok_ext" = 1 ] && [ "$ok_claude" = 1 ]; then
+    if [ "$ok_git" = 1 ] && [ "$ok_node" = 1 ] && [ "$ok_ag" = 1 ] && [ "$ok_code" = 1 ] && [ "$ok_rtl" = 1 ] && [ "$ok_claude" = 1 ]; then
         printf '\n  %sYou are all set. Everything is installed and ready to go.%s\n\n' "$C_GREEN" "$C_RESET"
     else
         echo
@@ -384,7 +383,7 @@ show_results() {
         else
             note "Almost there. A few things did not finish installing."
             note "Please run this command again. If it keeps happening, restart and retry."
-            if [ "$ok_ext" = 0 ] && [ "$ok_ag" = 1 ]; then
+            if { [ "$ok_code" = 0 ] || [ "$ok_rtl" = 0 ]; } && [ "$ok_ag" = 1 ]; then
                 note "If Antigravity is new, open it once (sign in with Google), then run this again."
             fi
         fi
