@@ -78,6 +78,18 @@ note() { printf '  %s%s%s\n' "$C_YELLOW" "$1" "$C_RESET"; }
 # --------------------------------------------------------------------------
 has_command() { command -v "$1" >/dev/null 2>&1; }
 
+# True only if git can actually run. On macOS the bare /usr/bin/git is a stub
+# that does nothing (and pops a GUI dialog) until the Command Line Tools are
+# installed, so treat that case as "not callable" to avoid a false positive and
+# an unwanted popup.
+git_callable() {
+    if [ "$OS" = mac ] && [ "$(command -v git 2>/dev/null)" = /usr/bin/git ] \
+        && ! xcode-select -p >/dev/null 2>&1; then
+        return 1
+    fi
+    has_command git && git --version >/dev/null 2>&1
+}
+
 # Run a command with root privileges: directly when already root, via sudo
 # otherwise (credentials are pre-authorized once in main).
 as_root() {
@@ -140,9 +152,16 @@ ensure_sudo() {
     [ "$(id -u)" -eq 0 ] && return 0
     has_command sudo || return 0
     [ "$OS" = mac ] && has_command brew && return 0   # brew needs no sudo
-    note "You may be asked for your password to install software."
-    sudo -v 2>/dev/null || true
-    ( while true; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
+    # Read the password from the real terminal, never from the script that is
+    # being piped into bash (curl ... | bash). Without a terminal we cannot
+    # prompt, so skip pre-auth and let individual steps handle it.
+    if [ -e /dev/tty ]; then
+        note "You may be asked for your password to install software."
+        sudo -v </dev/tty >/dev/null 2>&1 || true
+    fi
+    # Keep credentials warm in the background, fully detached from the terminal
+    # and the pipe so it can neither print nor consume the script.
+    ( while true; do sudo -n true 2>/dev/null || exit; sleep 50; done ) </dev/null >/dev/null 2>&1 &
     SUDO_KEEPALIVE_PID=$!
 }
 
@@ -185,17 +204,32 @@ pkg_install() {
 # --------------------------------------------------------------------------
 # git
 # --------------------------------------------------------------------------
+# Trigger Apple's Command Line Tools GUI installer (the supported no-Homebrew way
+# to get git on macOS) and wait, up to ~10 min, for it to finish.
+install_git_mac_clt() {
+    xcode-select --install >/dev/null 2>&1 || true
+    local waited=0
+    until xcode-select -p >/dev/null 2>&1; do
+        sleep 5; waited=$((waited + 5))
+        [ "$waited" -ge 600 ] && return 1
+    done
+}
+
 install_git() {
-    if has_command git; then
-        [ "$OS" = mac ] && has_command brew && run_quiet "Checking Git" brew upgrade git
+    if [ "$OS" = mac ]; then
+        if has_command brew; then
+            if git_callable; then run_quiet "Checking Git" brew upgrade git
+            else run_quiet "Installing Git" brew install git; fi
+            return 0
+        fi
+        git_callable && return 0
+        note 'A macOS window will open. Click "Install" to add Apple developer tools (these include Git).'
+        run_quiet "Installing Git (Apple developer tools)" install_git_mac_clt
         return 0
     fi
-    if [ "$OS" = mac ]; then
-        if has_command brew; then run_quiet "Installing Git" brew install git
-        else note "Opening Apple developer tools installer (a window may appear)."; xcode-select --install >/dev/null 2>&1 || true; fi
-    else
-        run_quiet "Installing Git" pkg_install git
-    fi
+    # Linux
+    has_command git && return 0
+    run_quiet "Installing Git" pkg_install git
 }
 
 # --------------------------------------------------------------------------
@@ -370,7 +404,7 @@ detail() {
 gather_versions() {
     local cli="$1" out="$2"
     {
-        printf 'GIT=%s\n' "$(git --version 2>/dev/null | head -1)"
+        if git_callable; then printf 'GIT=%s\n' "$(git --version 2>/dev/null | head -1)"; else printf 'GIT=\n'; fi
         printf 'NODE=%s\n' "$(node --version 2>/dev/null | head -1)"
         printf 'CLAUDE=%s\n' "$( { claude --version 2>/dev/null || "$CLAUDE_BIN_DIR/claude" --version 2>/dev/null; } | head -1)"
         if [ -n "$cli" ]; then
