@@ -157,7 +157,7 @@ ensure_sudo() {
     # prompt, so skip pre-auth and let individual steps handle it.
     if [ -e /dev/tty ]; then
         note "You may be asked for your password to install software."
-        sudo -v </dev/tty >/dev/null 2>&1 || true
+        { sudo -v; } </dev/tty 2>/dev/null || true
     fi
     # Keep credentials warm in the background, fully detached from the terminal
     # and the pipe so it can neither print nor consume the script.
