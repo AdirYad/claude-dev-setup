@@ -305,10 +305,11 @@ if ($cli) { & $cli --list-extensions --show-versions 2>$null }
 'EXTEND'
 '@
     $gather = $gather -replace '__CLI__', (([string]$cli) -replace "'", "''")
-    $gatherPath = [System.IO.Path]::GetTempFileName()
-    Set-Content -LiteralPath $gatherPath -Value $gather -Encoding UTF8
-    $out = (Invoke-Capture -Label 'Checking everything is in place' -FilePath 'powershell' -Arguments @('-NoProfile', '-File', $gatherPath)).StdOut
-    Remove-FileQuiet $gatherPath
+    # Run the whole check in one child via -EncodedCommand: no temp file, so no
+    # path-with-spaces (Start-Process does not quote args), no .ps1-extension
+    # requirement of "-File", and nothing to clean up afterwards.
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($gather))
+    $out = (Invoke-Capture -Label 'Checking everything is in place' -FilePath 'powershell' -Arguments @('-NoProfile', '-EncodedCommand', $encoded)).StdOut
 
     $gitRaw    = ([regex]::Match($out, 'GIT=(.*)')).Groups[1].Value.Trim()
     $nodeRaw   = ([regex]::Match($out, 'NODE=(.*)')).Groups[1].Value.Trim()
