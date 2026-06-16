@@ -75,6 +75,19 @@ function Write-Check {
 
 function Write-Note { param([string] $Message) Write-Host "  $Message" -ForegroundColor Yellow }
 
+# Delete temp files without ever aborting the run. Remove-Item can raise an
+# Argument-class error (e.g. a TEMP path under a non-resolving 8.3 short name)
+# that -ErrorAction SilentlyContinue does NOT suppress while $ErrorActionPreference
+# is 'Stop'. [System.IO.File]::Delete is literal, is a no-op on a missing file,
+# and ignores the preference; the try/catch covers an invalid directory.
+function Remove-FileQuiet {
+    param([string[]] $Path)
+    foreach ($p in $Path) {
+        if (-not $p) { continue }
+        try { [System.IO.File]::Delete($p) } catch { Write-Verbose "could not delete $p" }
+    }
+}
+
 # ----------------------------------------------------------------------------
 # Run an external program, capturing its output to files so it can neither spam
 # the console nor turn its stderr into a crash. Shows an animated spinner that
@@ -115,7 +128,7 @@ function Invoke-Capture {
         return [pscustomobject]@{ StdOut = $so; StdErr = $se }
     }
     finally {
-        Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
+        Remove-FileQuiet @($outFile, $errFile)
     }
 }
 
@@ -292,10 +305,10 @@ if ($cli) { & $cli --list-extensions --show-versions 2>$null }
 'EXTEND'
 '@
     $gather = $gather -replace '__CLI__', (([string]$cli) -replace "'", "''")
-    $gatherPath = Join-Path $env:TEMP 'cds-verify.ps1'
-    Set-Content -Path $gatherPath -Value $gather -Encoding UTF8
+    $gatherPath = [System.IO.Path]::GetTempFileName()
+    Set-Content -LiteralPath $gatherPath -Value $gather -Encoding UTF8
     $out = (Invoke-Capture -Label 'Checking everything is in place' -FilePath 'powershell' -Arguments @('-NoProfile', '-File', $gatherPath)).StdOut
-    Remove-Item $gatherPath -ErrorAction SilentlyContinue
+    Remove-FileQuiet $gatherPath
 
     $gitRaw    = ([regex]::Match($out, 'GIT=(.*)')).Groups[1].Value.Trim()
     $nodeRaw   = ([regex]::Match($out, 'NODE=(.*)')).Groups[1].Value.Trim()

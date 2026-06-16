@@ -52,6 +52,16 @@ function Write-Row {
 
 function Write-Note { param([string] $Message) Write-Host "  $Message" -ForegroundColor Yellow }
 
+# Delete temp files without ever aborting the run (see install.ps1 for why
+# Remove-Item is unsafe here under $ErrorActionPreference = 'Stop').
+function Remove-FileQuiet {
+    param([string[]] $Path)
+    foreach ($p in $Path) {
+        if (-not $p) { continue }
+        try { [System.IO.File]::Delete($p) } catch { Write-Verbose "could not delete $p" }
+    }
+}
+
 # Run a program behind a spinner that leaves a persistent line (see install.ps1).
 function Invoke-Capture {
     param([string] $Label, [string] $FilePath, [string[]] $Arguments = @(), [switch] $Quiet)
@@ -75,7 +85,7 @@ function Invoke-Capture {
         $so = if (Test-Path $outFile) { [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } else { '' }
         return [pscustomobject]@{ StdOut = $so }
     }
-    finally { Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue }
+    finally { Remove-FileQuiet @($outFile, $errFile) }
 }
 
 function Find-AntigravityCli {
