@@ -27,8 +27,8 @@ RTL_VSIX_URL="https://open-vsx.org/api/AdirYad/claude-rtl-code/${RTL_VSIX_VERSIO
 CLAUDE_BIN_DIR="$HOME/.local/bin"
 
 # Known-good macOS build for the no-Homebrew fallback (brew gets newer).
-ANTIGRAVITY_MAC_VER1="2.1.4"
-ANTIGRAVITY_MAC_VER2="6481382726303744"
+ANTIGRAVITY_MAC_VER1="2.14.0"
+ANTIGRAVITY_MAC_VER2="5449404535144448"
 
 # Optional override: point at a downloaded Antigravity .deb to auto-install on Linux.
 LINUX_ANTIGRAVITY_DEB_URL="${LINUX_ANTIGRAVITY_DEB_URL:-}"
@@ -117,8 +117,9 @@ run_quiet() {
             printf '\r  %s  %s   ' "${frames:$((i % 4)):1}" "$label"
             i=$((i + 1)); sleep 0.12
         done
-        wait "$pid" 2>/dev/null || true
-        rm -f "$log"
+        # Keep the output of a failed step so a screenshot can tell us why.
+        if wait "$pid" 2>/dev/null; then rm -f "$log"
+        else printf '\r  %s%s%s  %s  %s(details: %s)%s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label" "$C_GRAY" "$log" "$C_RESET"; return 0; fi
         printf '\r  %s%s%s  %s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label"
     else
         "$@" >/dev/null 2>&1 || true
@@ -299,8 +300,10 @@ install_antigravity_mac_dmg() {
     url="https://storage.googleapis.com/antigravity-public/antigravity-hub/${ANTIGRAVITY_MAC_VER1}-${ANTIGRAVITY_MAC_VER2}/darwin-${arch}/Antigravity.dmg"
     dmg="$(mktemp -d)/Antigravity.dmg"
     curl -fsSL "$url" -o "$dmg"
-    vol="$(hdiutil attach "$dmg" -nobrowse -quiet | grep -o '/Volumes/.*' | head -1)"
-    [ -z "$vol" ] && return 1
+    # Mount at a path we choose: "-quiet" closes hdiutil's stdout, so the mount
+    # table can't be parsed from it (that silently broke every no-brew install).
+    vol="$(mktemp -d)"
+    hdiutil attach "$dmg" -nobrowse -quiet -mountpoint "$vol" || return 1
     cp -R "$vol/Antigravity.app" /Applications/ 2>/dev/null || as_root cp -R "$vol/Antigravity.app" /Applications/
     hdiutil detach "$vol" -quiet || true
 }
