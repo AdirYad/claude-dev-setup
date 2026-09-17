@@ -65,9 +65,15 @@ run_quiet() {
 }
 
 find_antigravity_cli() {
+    if has_command antigravity-ide; then command -v antigravity-ide; return 0; fi
     if has_command antigravity; then command -v antigravity; return 0; fi
     local c
     for c in \
+        "/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" \
+        "$HOME/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" \
+        "/usr/share/antigravity-ide/bin/antigravity-ide" \
+        "/usr/bin/antigravity-ide" \
+        "/opt/antigravity-ide/bin/antigravity-ide" \
         "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity" \
         "/usr/share/antigravity/bin/antigravity" \
         "/usr/bin/antigravity" \

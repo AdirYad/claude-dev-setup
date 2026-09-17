@@ -26,9 +26,10 @@ RTL_VSIX_VERSION="1.0.9"
 RTL_VSIX_URL="https://open-vsx.org/api/AdirYad/claude-rtl-code/${RTL_VSIX_VERSION}/file/AdirYad.claude-rtl-code-${RTL_VSIX_VERSION}.vsix"
 CLAUDE_BIN_DIR="$HOME/.local/bin"
 
-# Known-good macOS build for the no-Homebrew fallback (brew gets newer).
-ANTIGRAVITY_MAC_VER1="2.14.0"
-ANTIGRAVITY_MAC_VER2="5449404535144448"
+# Known-good "Antigravity IDE" build for the no-Homebrew fallback (brew gets
+# newer). NOT the "Antigravity" hub app - that one ships no editor CLI.
+ANTIGRAVITY_MAC_VER1="2.5.5"
+ANTIGRAVITY_MAC_VER2="4923483625488384"
 
 # Optional override: point at a downloaded Antigravity .deb to auto-install on Linux.
 LINUX_ANTIGRAVITY_DEB_URL="${LINUX_ANTIGRAVITY_DEB_URL:-}"
@@ -218,12 +219,8 @@ install_git_mac_clt() {
 
 install_git() {
     if [ "$OS" = mac ]; then
-        if has_command brew; then
-            if git_callable; then run_quiet "Checking Git" brew upgrade git
-            else run_quiet "Installing Git" brew install git; fi
-            return 0
-        fi
         git_callable && return 0
+        if has_command brew; then run_quiet "Installing Git" brew install git; return 0; fi
         note 'A macOS window will open. Click "Install" to add Apple developer tools (these include Git).'
         run_quiet "Installing Git (Apple developer tools)" install_git_mac_clt
         return 0
@@ -279,10 +276,18 @@ install_node() {
 # --------------------------------------------------------------------------
 # Antigravity IDE
 # --------------------------------------------------------------------------
+# The editor is "Antigravity IDE" (CLI: antigravity-ide). Plain "Antigravity"
+# is the separate Agent Manager hub; its older CLI is kept as a fallback.
 find_antigravity_cli() {
+    if has_command antigravity-ide; then command -v antigravity-ide; return 0; fi
     if has_command antigravity; then command -v antigravity; return 0; fi
     local c
     for c in \
+        "/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" \
+        "$HOME/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" \
+        "/usr/share/antigravity-ide/bin/antigravity-ide" \
+        "/usr/bin/antigravity-ide" \
+        "/opt/antigravity-ide/bin/antigravity-ide" \
         "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity" \
         "/usr/share/antigravity/bin/antigravity" \
         "/usr/bin/antigravity" \
@@ -297,14 +302,14 @@ install_antigravity_mac_dmg() {
     local arch url dmg vol
     arch="$(uname -m)"
     case "$arch" in arm64) arch="arm" ;; x86_64) arch="x64" ;; esac
-    url="https://storage.googleapis.com/antigravity-public/antigravity-hub/${ANTIGRAVITY_MAC_VER1}-${ANTIGRAVITY_MAC_VER2}/darwin-${arch}/Antigravity.dmg"
-    dmg="$(mktemp -d)/Antigravity.dmg"
+    url="https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/${ANTIGRAVITY_MAC_VER1}-${ANTIGRAVITY_MAC_VER2}/darwin-${arch}/Antigravity%20IDE.dmg"
+    dmg="$(mktemp -d)/AntigravityIDE.dmg"
     curl -fsSL "$url" -o "$dmg"
     # Mount at a path we choose: "-quiet" closes hdiutil's stdout, so the mount
     # table can't be parsed from it (that silently broke every no-brew install).
     vol="$(mktemp -d)"
     hdiutil attach "$dmg" -nobrowse -quiet -mountpoint "$vol" || return 1
-    cp -R "$vol/Antigravity.app" /Applications/ 2>/dev/null || as_root cp -R "$vol/Antigravity.app" /Applications/
+    cp -R "$vol/Antigravity IDE.app" /Applications/ 2>/dev/null || as_root cp -R "$vol/Antigravity IDE.app" /Applications/
     hdiutil detach "$vol" -quiet || true
 }
 
@@ -317,11 +322,11 @@ install_antigravity_deb() {
 
 install_antigravity() {
     if find_antigravity_cli >/dev/null 2>&1; then
-        [ "$OS" = mac ] && has_command brew && run_quiet "Checking Antigravity" brew upgrade --cask antigravity
+        [ "$OS" = mac ] && has_command brew && brew list --cask antigravity-ide >/dev/null 2>&1 && run_quiet "Checking Antigravity" brew upgrade --cask antigravity-ide
         return 0
     fi
     if [ "$OS" = mac ]; then
-        if has_command brew; then run_quiet "Installing Antigravity" brew install --cask antigravity
+        if has_command brew; then run_quiet "Installing Antigravity" brew install --cask antigravity-ide
         else run_quiet "Installing Antigravity" install_antigravity_mac_dmg; fi
     else
         if [ -n "$LINUX_ANTIGRAVITY_DEB_URL" ] && [ "$PKG" = "apt-get" ]; then
