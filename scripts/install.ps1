@@ -215,8 +215,11 @@ function Find-AntigravityCli {
 }
 
 function Install-Antigravity {
-    if (Find-AntigravityCli) { [void](Invoke-Winget -Label 'Checking Antigravity' -Verb 'upgrade' -Id 'Google.Antigravity'); return }
-    if (Invoke-Winget -Label 'Installing Antigravity' -Verb 'install' -Id 'Google.Antigravity') { Update-SessionPath }
+    # Google.AntigravityIDE is the AI IDE (editor + extension support). NOT
+    # Google.Antigravity, which is the standalone "Agent Manager" hub - it has no
+    # editor CLI, so extensions can't install against it.
+    if (Find-AntigravityCli) { [void](Invoke-Winget -Label 'Checking Antigravity' -Verb 'upgrade' -Id 'Google.AntigravityIDE'); return }
+    if (Invoke-Winget -Label 'Installing Antigravity' -Verb 'install' -Id 'Google.AntigravityIDE') { Update-SessionPath }
 }
 
 # Antigravity's CLI prints a harmless analytics warning to stderr; its real

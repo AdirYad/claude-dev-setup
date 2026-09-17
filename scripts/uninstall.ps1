@@ -147,7 +147,7 @@ function Main {
     Write-Host "  $rule" -ForegroundColor DarkGray
     Write-Row $script:Bullet 'DarkGray' 'Git'         'winget uninstall Git.Git'
     Write-Row $script:Bullet 'DarkGray' 'Node.js'     'winget uninstall OpenJS.NodeJS.LTS'
-    Write-Row $script:Bullet 'DarkGray' 'Antigravity' 'winget uninstall Google.Antigravity'
+    Write-Row $script:Bullet 'DarkGray' 'Antigravity' 'winget uninstall Google.AntigravityIDE'
     Write-Host "  $rule" -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '  Done. The Claude parts have been removed.' -ForegroundColor Green
