@@ -45,6 +45,11 @@ $script:ClaudeBinDir   = Join-Path $env:USERPROFILE '.local\bin'
 # Known-good "Antigravity IDE" build, used only when winget is missing or fails
 # (same build as the macOS no-Homebrew fallback in install.sh).
 $script:AntigravityBuild = '2.5.5-4923483625488384'
+# Child PowerShell = the one the user is in. pwsh 7 spawning powershell.exe
+# 5.1 leaks its PSModulePath, so 5.1 can't load irm/iwr and the Claude
+# installer dies. ISE and other hosts can't take -EncodedCommand: use 5.1.
+$script:PsExe = (Get-Process -Id $PID).Path
+if ((Split-Path $script:PsExe -Leaf) -notin 'pwsh.exe', 'powershell.exe') { $script:PsExe = 'powershell' }
 $script:WingetExe      = $null
 
 $script:Check = [char]0x2713   # check mark
@@ -191,7 +196,10 @@ function Set-ExecutionPolicyIfRestricted {
     if ($DryRun) { return }
     $current = Get-ExecutionPolicy -Scope CurrentUser
     if (@('Restricted', 'AllSigned', 'Undefined') -contains [string]$current) {
-        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+        # Throws "Security error" when a Process/GPO scope overrides it, even
+        # though the CurrentUser value was saved. Nothing for the user to do.
+        try { Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force }
+        catch { Write-Verbose "execution policy: $($_.Exception.Message)" }
     }
 }
 
@@ -331,14 +339,18 @@ $ProgressPreference = 'SilentlyContinue'
 irm https://claude.ai/install.ps1 | iex
 '@
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($official))
-    $r = Invoke-Capture -Label 'Installing Claude' -FilePath 'powershell' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
+    $r = Invoke-Capture -Label 'Installing Claude' -FilePath $script:PsExe -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
     Add-ToUserPath $script:ClaudeBinDir
     if (Find-ClaudeCli) { return }
 
     # claude.ai can be unreachable (network filter, VPN, region, blocked
     # PowerShell). npm comes with Node.js and reaches a different host.
-    $reason = (($r.StdErr -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -First 1)
-    if ($reason) { Write-Note "Claude's installer failed ($($reason.Trim())). Trying npm instead." }
+    # A redirected child writes its errors as CLIXML; pull out the message text.
+    $reason = ([regex]::Matches($r.StdErr, '<S S="Error">(.*?)</S>') | ForEach-Object { $_.Groups[1].Value -replace '_x[0-9A-F]{4}_', ' ' }) -join ''
+    if (-not $reason) { $reason = $r.StdErr }
+    $reason = ($reason -replace '\s+', ' ').Trim()
+    if ($reason.Length -gt 160) { $reason = $reason.Substring(0, 160) + '...' }
+    Write-Note "Claude's installer did not finish$(if ($reason) { " ($reason)" }). Trying npm instead."
     $npm = (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $npm) { return }
     [void](Invoke-Capture -Label 'Installing Claude (npm)' -FilePath $npm -Arguments @('install', '-g', '@anthropic-ai/claude-code'))
@@ -378,7 +390,7 @@ if ($cli) { & $cli --list-extensions --show-versions 2>$null }
     # path-with-spaces (Start-Process does not quote args), no .ps1-extension
     # requirement of "-File", and nothing to clean up afterwards.
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($gather))
-    $out = (Invoke-Capture -Label 'Checking everything is in place' -FilePath 'powershell' -Arguments @('-NoProfile', '-EncodedCommand', $encoded)).StdOut
+    $out = (Invoke-Capture -Label 'Checking everything is in place' -FilePath $script:PsExe -Arguments @('-NoProfile', '-EncodedCommand', $encoded)).StdOut
 
     $gitRaw    = ([regex]::Match($out, 'GIT=(.*)')).Groups[1].Value.Trim()
     $nodeRaw   = ([regex]::Match($out, 'NODE=(.*)')).Groups[1].Value.Trim()

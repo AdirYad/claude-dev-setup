@@ -86,6 +86,9 @@ jobs:
             $notes = ($out -split "`r?`n" | Where-Object { $_ -match 'failed|Trying npm' } | ForEach-Object { $_.Trim() }) -join ' | '
             Write-Host "::notice title=${{ matrix.name }} run $run::$rows $notes"
             if ($out -notmatch 'You are all set') { Write-Host "::error title=${{ matrix.name }} run $run::$rows $notes"; $failed = $true }
+            if ($out -match 'A step failed') { Write-Host "::error title=${{ matrix.name }} run $run::a step failed: $notes"; $failed = $true }
+            # Off the hostile leg the official Claude installer must work on its own.
+            if ('${{ matrix.hostile }}' -ne 'true' -and $out -match 'Trying npm') { Write-Host "::error title=${{ matrix.name }} run $run::official Claude installer failed: $notes"; $failed = $true }
           }
           $ag = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory | Where-Object Name -like 'Antigravity*' | ForEach-Object { "$($_.Name): " + ((Get-ChildItem (Join-Path $_.FullName 'bin') -ErrorAction SilentlyContinue).Name -join ',') }
           Write-Host "::notice title=${{ matrix.name }} antigravity folders::$($ag -join ' ; ')"
@@ -120,6 +123,7 @@ jobs:
             rows="$(printf '%s\n' "$out" | grep -E '(Git|Node\.js|Antigravity|Claude in editor|Hebrew support|Claude command) ' | sed 's/\x1b\[[0-9;]*m//g' | tr -s ' ' | paste -sd'|' -)"
             echo "::notice title=${{ matrix.name }} run $run::$rows"
             if ! printf '%s' "$out" | grep -q 'You are all set'; then echo "::error title=${{ matrix.name }} run $run::$rows"; failed=1; fi
+            if [ "${{ matrix.hostile }}" != true ] && printf '%s' "$out" | grep -q 'Claude (npm)'; then echo "::error title=${{ matrix.name }} run $run::official Claude installer failed"; failed=1; fi
           done
           exit "$failed"
 
