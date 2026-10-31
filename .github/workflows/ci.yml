@@ -58,17 +58,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: pwsh, shell: pwsh, hostile: false }
-          - { name: windows-powershell-5.1, shell: powershell, hostile: false }
-          - { name: hostile, shell: pwsh, hostile: true }
+          - { name: pwsh, exe: pwsh, hostile: false }
+          - { name: windows-powershell-5.1, exe: powershell, hostile: false }
+          - { name: hostile, exe: pwsh, hostile: true }
     steps:
       - name: Block claude.ai
         if: matrix.hostile
         shell: pwsh
         run: Add-Content "$env:SystemRoot\System32\drivers\etc\hosts" "`r`n0.0.0.0 claude.ai`r`n0.0.0.0 www.claude.ai"
+      # shell: can't take an expression, so the matrix picks the PowerShell
+      # that runs the test body.
       - name: irm | iex, twice
-        shell: ${{ matrix.shell }}
+        shell: pwsh
         run: |
+          & ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -Command {
           $ErrorActionPreference = 'Continue'
           if ('${{ matrix.hostile }}' -eq 'true') {
             $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch 'WindowsApps' }) -join ';'
@@ -87,6 +90,8 @@ jobs:
           $ag = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory | Where-Object Name -like 'Antigravity*' | ForEach-Object { "$($_.Name): " + ((Get-ChildItem (Join-Path $_.FullName 'bin') -ErrorAction SilentlyContinue).Name -join ',') }
           Write-Host "::notice title=${{ matrix.name }} antigravity folders::$($ag -join ' ; ')"
           if ($failed) { exit 1 }
+          }
+          exit $LASTEXITCODE
 
   # Real install on clean macOS runners, the one-liner users paste, twice. The
   # "hostile" leg hides Homebrew and blocks claude.ai (DMG + npm fallbacks).
