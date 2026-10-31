@@ -123,7 +123,10 @@ run_quiet() {
         else printf '\r  %s%s%s  %s  %s(details: %s)%s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label" "$C_GRAY" "$log" "$C_RESET"; return 0; fi
         printf '\r  %s%s%s  %s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label"
     else
-        "$@" >/dev/null 2>&1 || true
+        # No terminal (CI, logs): keep quiet unless the step fails.
+        local log; log="$(mktemp)"
+        "$@" >"$log" 2>&1 || { printf '  (%s failed, last output:)\n' "$label"; tail -n 8 "$log" | sed 's/^/    /'; }
+        rm -f "$log"
         printf '  %s%s%s  %s\n' "$C_GREEN" "$CHECK" "$C_RESET" "$label"
     fi
     return 0
@@ -298,13 +301,23 @@ find_antigravity_cli() {
     return 1
 }
 
+# hdiutil attach fails now and then ("Resource busy"), so try a few times.
 install_antigravity_mac_dmg() {
+    local i
+    for i in 1 2 3; do
+        install_antigravity_mac_dmg_once && find_antigravity_cli >/dev/null 2>&1 && return 0
+        sleep 5
+    done
+    return 1
+}
+
+install_antigravity_mac_dmg_once() {
     local arch url dmg vol
     arch="$(uname -m)"
     case "$arch" in arm64) arch="arm" ;; x86_64) arch="x64" ;; esac
     url="https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/${ANTIGRAVITY_MAC_VER1}-${ANTIGRAVITY_MAC_VER2}/darwin-${arch}/Antigravity%20IDE.dmg"
     dmg="$(mktemp -d)/AntigravityIDE.dmg"
-    curl -fsSL "$url" -o "$dmg"
+    curl -fsSL --retry 3 "$url" -o "$dmg" || return 1
     # Mount at a path we choose: "-quiet" closes hdiutil's stdout, so the mount
     # table can't be parsed from it (that silently broke every no-brew install).
     vol="$(mktemp -d)"
