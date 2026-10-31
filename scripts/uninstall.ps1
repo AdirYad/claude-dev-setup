@@ -88,14 +88,29 @@ function Invoke-Capture {
     finally { Remove-FileQuiet @($outFile, $errFile) }
 }
 
+# Same lookup as install.ps1: 2.x "Antigravity IDE" first, 1.x as fallback.
 function Find-AntigravityCli {
-    if (Get-Command 'antigravity' -ErrorAction SilentlyContinue) { return (Get-Command 'antigravity').Source }
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\bin\antigravity.cmd'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\bin\antigravity'),
-        (Join-Path ${env:ProgramFiles} 'Antigravity\bin\antigravity.cmd')
+    foreach ($name in 'antigravity-ide', 'antigravity') {
+        $cmd = Get-Command "$name.cmd" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+    }
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity'),
+        (Join-Path ${env:ProgramFiles} 'Antigravity IDE'),
+        (Join-Path ${env:ProgramFiles} 'Antigravity')
     )
-    foreach ($c in $candidates) { if ($c -and (Test-Path $c)) { return $c } }
+    foreach ($hive in 'HKCU', 'HKLM') {
+        $roots += Get-ItemProperty "${hive}:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Antigravity*' -and $_.InstallLocation } |
+            ForEach-Object { $_.InstallLocation }
+    }
+    foreach ($r in $roots) {
+        foreach ($name in 'antigravity-ide.cmd', 'antigravity.cmd') {
+            $p = Join-Path $r "bin\$name"
+            if (Test-Path $p) { return $p }
+        }
+    }
     return $null
 }
 
@@ -127,13 +142,18 @@ function Main {
             Remove-Item (Join-Path $script:ClaudeBinDir 'claude.exe') -Force -ErrorAction SilentlyContinue
         }
         Remove-Item $script:ClaudeShare -Recurse -Force -ErrorAction SilentlyContinue
+        # install.ps1 falls back to npm when claude.ai is unreachable.
+        $npm = (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if ($npm -and (Test-Path (Join-Path $env:APPDATA 'npm\claude.cmd'))) {
+            [void](Invoke-Capture -Label 'Removing the Claude command (npm)' -FilePath $npm -Arguments @('uninstall', '-g', '@anthropic-ai/claude-code'))
+        }
     }
 
     # Results
     $exts = Get-AntigravityExtensions -Cli $cli
     $codeGone = ($exts -notcontains $script:ExtClaudeCode.ToLower())
     $rtlGone = ($exts -notcontains $script:ExtClaudeRtl.ToLower())
-    $claudeGone = -not (Test-Path (Join-Path $script:ClaudeBinDir 'claude.exe'))
+    $claudeGone = -not ((Test-Path (Join-Path $script:ClaudeBinDir 'claude.exe')) -or (Test-Path (Join-Path $env:APPDATA 'npm\claude.cmd')))
 
     $rule = ([char]0x2500).ToString() * 52
     Write-Host ''

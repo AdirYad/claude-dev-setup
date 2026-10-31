@@ -26,6 +26,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # no Invoke-WebRequest progress bars
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { Write-Verbose 'console encoding unchanged' }
+# Windows PowerShell 5.1 on older .NET defaults to TLS 1.0, which every download host refuses.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch { Write-Verbose 'tls unchanged' }
 
 # PS7-only: stop non-zero native exit codes becoming terminating errors.
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
@@ -40,6 +42,9 @@ $script:ExtClaudeRtl   = 'AdirYad.claude-rtl-code'
 $script:RtlVsixVersion = '1.0.9'
 $script:RtlVsixUrl     = "https://open-vsx.org/api/AdirYad/claude-rtl-code/$($script:RtlVsixVersion)/file/AdirYad.claude-rtl-code-$($script:RtlVsixVersion).vsix"
 $script:ClaudeBinDir   = Join-Path $env:USERPROFILE '.local\bin'
+# Known-good "Antigravity IDE" build, used only when winget is missing or fails
+# (same build as the macOS no-Homebrew fallback in install.sh).
+$script:AntigravityBuild = '2.5.5-4923483625488384'
 $script:WingetExe      = $null
 
 $script:Check = [char]0x2713   # check mark
@@ -203,15 +208,47 @@ function Install-Node {
     if (Invoke-Winget -Label 'Installing Node.js' -Verb 'install' -Id 'OpenJS.NodeJS.LTS') { Update-SessionPath }
 }
 
+# Since 2.x the editor is "Antigravity IDE": folder "Programs\Antigravity IDE",
+# CLI "antigravity-ide.cmd". 1.x installs (and upgrades of them) keep
+# "Programs\Antigravity\bin\antigravity.cmd". Look for both, plus wherever the
+# installer registered itself, so a custom install folder is found too.
 function Find-AntigravityCli {
-    if (Test-CommandExists 'antigravity') { return (Get-Command 'antigravity' -ErrorAction SilentlyContinue).Source }
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\bin\antigravity.cmd'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\bin\antigravity'),
-        (Join-Path ${env:ProgramFiles} 'Antigravity\bin\antigravity.cmd')
+    foreach ($name in 'antigravity-ide', 'antigravity') {
+        $cmd = Get-Command "$name.cmd" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+    }
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity'),
+        (Join-Path ${env:ProgramFiles} 'Antigravity IDE'),
+        (Join-Path ${env:ProgramFiles} 'Antigravity')
     )
-    foreach ($c in $candidates) { if ($c -and (Test-Path $c)) { return $c } }
+    foreach ($hive in 'HKCU', 'HKLM') {
+        $roots += Get-ItemProperty "${hive}:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Antigravity*' -and $_.InstallLocation } |
+            ForEach-Object { $_.InstallLocation }
+    }
+    foreach ($r in $roots) {
+        foreach ($name in 'antigravity-ide.cmd', 'antigravity.cmd') {
+            $p = Join-Path $r "bin\$name"
+            if (Test-Path $p) { return $p }
+        }
+    }
     return $null
+}
+
+# Fallback when winget is missing or broken: Google's own installer, silent.
+function Install-AntigravityDirect {
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    $url = "https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/$($script:AntigravityBuild)/windows-$arch/Antigravity%20IDE.exe"
+    $exe = Join-Path $env:TEMP 'AntigravityIDESetup.exe'
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+        [void](Invoke-Capture -Label 'Installing Antigravity' -FilePath $exe -Arguments @(
+                '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/MERGETASKS=!runcode'))
+    }
+    finally { Remove-FileQuiet @($exe) }
+    Update-SessionPath
 }
 
 function Install-Antigravity {
@@ -219,7 +256,12 @@ function Install-Antigravity {
     # Google.Antigravity, which is the standalone "Agent Manager" hub - it has no
     # editor CLI, so extensions can't install against it.
     if (Find-AntigravityCli) { [void](Invoke-Winget -Label 'Checking Antigravity' -Verb 'upgrade' -Id 'Google.AntigravityIDE'); return }
-    if (Invoke-Winget -Label 'Installing Antigravity' -Verb 'install' -Id 'Google.AntigravityIDE') { Update-SessionPath }
+    if (Get-WingetExe) {
+        [void](Invoke-Winget -Label 'Installing Antigravity' -Verb 'install' -Id 'Google.AntigravityIDE')
+        Update-SessionPath
+    }
+    if ($DryRun -or (Find-AntigravityCli)) { return }
+    Install-AntigravityDirect
 }
 
 # Antigravity's CLI prints a harmless analytics warning to stderr; its real
@@ -262,22 +304,45 @@ function Install-Extensions {
     Install-AntigravityExtension -ExtId $script:ExtClaudeRtl -Cli $cli -VsixUrl $script:RtlVsixUrl -Existing $existing -Label 'Adding Hebrew/Arabic support'
 }
 
-function Install-ClaudeCli {
+# claude.exe (native) or claude.cmd (npm). Never claude.ps1: Start-Process
+# opens a .ps1 in Notepad instead of running it.
+function Find-ClaudeCli {
     $claudeExe = Join-Path $script:ClaudeBinDir 'claude.exe'
-    if ((Test-CommandExists 'claude') -or (Test-Path $claudeExe)) {
-        if (-not $DryRun) {
-            $claudeCmd = (Get-Command claude -ErrorAction SilentlyContinue).Source
-            if (-not $claudeCmd) { $claudeCmd = $claudeExe }
-            [void](Invoke-Capture -Label 'Checking Claude' -FilePath $claudeCmd -Arguments @('update'))
-        }
+    if (Test-Path $claudeExe) { return $claudeExe }
+    $cmd = Get-Command 'claude.exe', 'claude.cmd' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Install-ClaudeCli {
+    $existing = Find-ClaudeCli
+    if ($existing) {
+        if (-not $DryRun) { [void](Invoke-Capture -Label 'Checking Claude' -FilePath $existing -Arguments @('update')) }
         Add-ToUserPath $script:ClaudeBinDir
         return
     }
     if ($DryRun) { return }
-    $installerPath = Join-Path $env:TEMP 'claude-install.ps1'
-    Invoke-WebRequest -Uri 'https://claude.ai/install.ps1' -OutFile $installerPath -UseBasicParsing
-    [void](Invoke-Capture -Label 'Installing Claude' -FilePath 'powershell' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installerPath))
+
+    # Official installer, run in a child via -EncodedCommand: no temp file, so a
+    # TEMP path with spaces can't break it, and its own errors land in StdErr.
+    $official = @'
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
+$ProgressPreference = 'SilentlyContinue'
+irm https://claude.ai/install.ps1 | iex
+'@
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($official))
+    $r = Invoke-Capture -Label 'Installing Claude' -FilePath 'powershell' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
     Add-ToUserPath $script:ClaudeBinDir
+    if (Find-ClaudeCli) { return }
+
+    # claude.ai can be unreachable (network filter, VPN, region, blocked
+    # PowerShell). npm comes with Node.js and reaches a different host.
+    $reason = (($r.StdErr -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -First 1)
+    if ($reason) { Write-Note "Claude's installer failed ($($reason.Trim())). Trying npm instead." }
+    $npm = (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $npm) { return }
+    [void](Invoke-Capture -Label 'Installing Claude (npm)' -FilePath $npm -Arguments @('install', '-g', '@anthropic-ai/claude-code'))
+    Add-ToUserPath (Join-Path $env:APPDATA 'npm')
 }
 
 # ----------------------------------------------------------------------------
@@ -301,7 +366,8 @@ function V($exe, $a) { try { $o = & $exe $a 2>$null; if ($o) { return ([string](
 $cli = '__CLI__'
 'GIT=' + (V 'git' '--version')
 'NODE=' + (V 'node' '--version')
-'CLAUDE=' + (V 'claude' '--version')
+$claude = (Get-Command claude.exe, claude.cmd -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+'CLAUDE=' + $(if ($claude) { V $claude '--version' } else { '' })
 'AG=' + $(if ($cli) { V $cli '--version' } else { '' })
 'EXTSTART'
 if ($cli) { & $cli --list-extensions --show-versions 2>$null }
@@ -365,7 +431,7 @@ if ($cli) { & $cli --list-extensions --show-versions 2>$null }
 function Invoke-Safe {
     param([scriptblock] $Action)
     try { & $Action }
-    catch { Write-Verbose "step failed: $($_.Exception.Message)" }
+    catch { Write-Note "A step failed: $($_.Exception.Message)" }
 }
 
 function Main {

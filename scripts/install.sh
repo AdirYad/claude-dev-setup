@@ -394,6 +394,12 @@ install_claude_cli() {
     fi
     run_quiet "Installing Claude" claude_install_cmd
     persist_path "$CLAUDE_BIN_DIR"
+    $DRY_RUN && return 0
+    [ -x "$CLAUDE_BIN_DIR/claude" ] && return 0
+    # claude.ai can be unreachable (network filter, VPN, region). npm reaches a
+    # different host; --prefix ~/.local puts the binary in ~/.local/bin, no sudo.
+    has_command npm || return 0
+    run_quiet "Installing Claude (npm)" npm install -g --prefix "$HOME/.local" @anthropic-ai/claude-code
 }
 
 # --------------------------------------------------------------------------

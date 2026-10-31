@@ -47,6 +47,77 @@ jobs:
         shell: pwsh
         run: .\tests\smoke.ps1
 
+  # Real install on a clean Windows VM, with the exact one-liner users paste
+  # (irm | iex), run twice (fresh + re-run). The "hostile" leg has no winget
+  # and claude.ai blocked, so both fallbacks (direct Antigravity download, npm
+  # Claude) are exercised.
+  real-install-windows:
+    name: real install (windows, ${{ matrix.name }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: pwsh, shell: pwsh, hostile: false }
+          - { name: windows-powershell-5.1, shell: powershell, hostile: false }
+          - { name: hostile, shell: pwsh, hostile: true }
+    steps:
+      - name: Block claude.ai
+        if: matrix.hostile
+        shell: pwsh
+        run: Add-Content "$env:SystemRoot\System32\drivers\etc\hosts" "`r`n0.0.0.0 claude.ai`r`n0.0.0.0 www.claude.ai"
+      - name: irm | iex, twice
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ('${{ matrix.hostile }}' -eq 'true') {
+            $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch 'WindowsApps' }) -join ';'
+            if (Get-Command winget -ErrorAction SilentlyContinue) { throw 'winget still visible' }
+          }
+          $url = 'https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/scripts/install.ps1'
+          $failed = $false
+          foreach ($run in 1, 2) {
+            $out = & { irm $url | iex } *>&1 | Out-String
+            Write-Host $out
+            $rows = ($out -split "`r?`n" | Where-Object { $_ -match '^\s+\S\s+(Git|Node\.js|Antigravity|Claude in editor|Hebrew support|Claude command)\s' } | ForEach-Object { $_.Trim() }) -join ' | '
+            $notes = ($out -split "`r?`n" | Where-Object { $_ -match 'failed|Trying npm' } | ForEach-Object { $_.Trim() }) -join ' | '
+            Write-Host "::notice title=${{ matrix.name }} run $run::$rows $notes"
+            if ($out -notmatch 'You are all set') { Write-Host "::error title=${{ matrix.name }} run $run::$rows $notes"; $failed = $true }
+          }
+          $ag = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory | Where-Object Name -like 'Antigravity*' | ForEach-Object { "$($_.Name): " + ((Get-ChildItem (Join-Path $_.FullName 'bin') -ErrorAction SilentlyContinue).Name -join ',') }
+          Write-Host "::notice title=${{ matrix.name }} antigravity folders::$($ag -join ' ; ')"
+          if ($failed) { exit 1 }
+
+  # Real install on clean macOS runners, the one-liner users paste, twice. The
+  # "hostile" leg hides Homebrew and blocks claude.ai (DMG + npm fallbacks).
+  real-install-macos:
+    name: real install (macos, ${{ matrix.name }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: homebrew, hostile: false }
+          - { name: hostile, hostile: true }
+    steps:
+      - name: curl | bash, twice
+        run: |
+          if [ "${{ matrix.hostile }}" = true ]; then
+            printf '0.0.0.0 claude.ai\n0.0.0.0 www.claude.ai\n' | sudo tee -a /etc/hosts >/dev/null
+            PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v homebrew | paste -sd: -)"; export PATH
+            if command -v brew >/dev/null; then echo "brew still visible"; exit 1; fi
+          fi
+          url="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/scripts/install.sh"
+          failed=0
+          for run in 1 2; do
+            out="$(curl -fsSL "$url" | bash 2>&1)"
+            printf '%s\n' "$out"
+            rows="$(printf '%s\n' "$out" | grep -E '(Git|Node\.js|Antigravity|Claude in editor|Hebrew support|Claude command) ' | sed 's/\x1b\[[0-9;]*m//g' | tr -s ' ' | paste -sd'|' -)"
+            echo "::notice title=${{ matrix.name }} run $run::$rows"
+            if ! printf '%s' "$out" | grep -q 'You are all set'; then echo "::error title=${{ matrix.name }} run $run::$rows"; failed=1; fi
+          done
+          exit "$failed"
+
   # Real, end-to-end install in a clean container (no dry-run). Proves the
   # script actually installs git, Node.js, and the Claude Code CLI from scratch.
   # Antigravity and its extensions are a GUI app that needs a display and a
